@@ -13,11 +13,13 @@ CONTACT_EMAIL = "caisarmaldinianwar@gmail.com"
 PRODUCT_NAME = "Lobster ID"
 PRODUCT_TAGLINE = "Suplier Lobster favoritmu!"
 PRODUCT_DESCRIPTION = """
-Kelebihan dari Kopi Kami:
+Kelebihan dari Lobster Kami:
 
-- Dipanen sampai biji berwarna merah, menghasilkan kopi yang benar benar matang
-- Kopi pilihan dari Wirogomo, Jawa Tengah
-- Rasa yang pas dan berkualitas
+- Berasal dari indukan terpilih dengan kualitas tinggi
+- Potensi pertumbuhan cepat
+- Dikembangkan di tambak yang steril
+- Ukuran tepat dan seragam
+
 
 **Apa lagi yang harus diragukan? disini kami hanya menjual kualitas terbaik!**
 """
@@ -61,6 +63,4 @@ for image, description in features.items():
     left_col.image(image, use_container_width=True)
     right_col.write(f"**{description[0]}**")
     right_col.write(description[1])
-
-
 
