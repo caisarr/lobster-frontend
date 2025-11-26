@@ -8,7 +8,6 @@ INVENTORY_ACCOUNTS = ['1-1200', '1-1400', '1-1500']
 
 @st.cache_data
 def get_coa_and_products():
-    # Ambil COA
     coa_response = supabase.table("chart_of_accounts").select("account_code, account_name").order("account_code").execute()
     coa_list = coa_response.data
     coa_map = {f"{a['account_code']} - {a['account_name']}": a['account_code'] for a in coa_list}
@@ -32,7 +31,7 @@ def jurnal_umum_form():
         st.title("Jurnal Umum & Penyesuaian")
         st.subheader("Detail Transaksi")
         
-        # --- [UPDATE] Tambahan Pilihan Tipe Jurnal ---
+        # [UPDATE] Tambahan Pilihan Tipe Jurnal
         col_type, col_date = st.columns([1, 2])
         with col_type:
             entry_type = st.selectbox("Tipe Jurnal", ["REGULAR", "AJP"], help="Pilih AJP untuk jurnal penyesuaian akhir periode.")
@@ -132,7 +131,7 @@ def jurnal_umum_form():
                 journal_header = supabase.table("journal_entries").insert({
                     "transaction_date": str(jurnal_date),
                     "description": description,
-                    "entry_type": entry_type # <-- FITUR BARU
+                    "entry_type": entry_type 
                 }).execute().data[0]
                 journal_id = journal_header["id"]
 
@@ -187,7 +186,7 @@ def jurnal_umum_form():
 
                 st.success(f"Jurnal {entry_type} (ID: {journal_id}) Berhasil Disimpan!")
                 st.session_state.journal_lines_manual = [] 
-                st.cache_data.clear() # Clear cache agar stok terupdate
+                st.cache_data.clear() 
                 st.rerun()
 
             except Exception as e:
