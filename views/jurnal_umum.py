@@ -45,14 +45,13 @@ def jurnal_umum_form():
     # --- TABEL PREVIEW ---
     st.write("### Rincian Jurnal")
     
-    # Tombol Reset untuk membersihkan error "Data Nyangkut"
+    # [PENTING] Tombol Reset untuk membersihkan error "Data Nyangkut"
     if st.button("🔄 Reset / Bersihkan Form"):
         st.session_state.journal_lines_manual = []
         st.rerun()
 
     if st.session_state.journal_lines_manual:
         df_view = pd.DataFrame(st.session_state.journal_lines_manual)
-        # Format tampilan angka tanpa desimal (.0f)
         st.dataframe(df_view[['Akun', 'Debit', 'Kredit', 'Detail Stok']], use_container_width=True, hide_index=True)
         
         d_tot = df_view['Debit'].sum()
@@ -138,7 +137,7 @@ def jurnal_umum_form():
             elif debit_val > 0 and credit_val > 0:
                 st.error("Pilih salah satu: Debit atau Kredit.")
             else:
-                # KONVERSI KE INT DI SINI AGAR AMAN
+                # KONVERSI KE INT DI SINI AGAR TAMPILAN CLEAN
                 safe_debit = int(round(debit_val))
                 safe_credit = int(round(credit_val))
                 safe_qty = int(qty_input)
@@ -153,7 +152,7 @@ def jurnal_umum_form():
                     "inv_mode": inv_mode,
                     "product_id": prod_id,
                     "qty": safe_qty,
-                    "unit_cost": cost_input
+                    "unit_cost": cost_input # Biarkan float di sini, nanti di-convert saat simpan jika perlu
                 }
                 st.session_state.journal_lines_manual.append(new_line)
                 st.rerun()
@@ -183,8 +182,7 @@ def save_transaction(entry_type, t_date, desc):
         db_moves = []
 
         for row in lines:
-            # 2. Lines (Pastikan amount dikirim sebagai Integer)
-            # Kita lakukan int() lagi untuk double protection
+            # 2. Lines (PASTIKAN SEMUA ANGKA DI-INT-KAN)
             db_lines.append({
                 "journal_id": jid, 
                 "account_code": row['Kode Akun'], 
@@ -212,22 +210,23 @@ def save_transaction(entry_type, t_date, desc):
                 elif mode == 'OUT':
                     new_s = old_s - qty
                 
-                # Update DB (Stok wajib int, Cost boleh float/int tergantung kolom)
-                # Kita gunakan int(new_s) agar aman. 
-                # Jika cost_price di DB integer, gunakan int(new_c), jika numeric biarkan float.
-                # Defaultnya kita biarkan float untuk cost, tapi stock wajib int.
-                
+                # Update DB - STOK HARUS INT
                 supabase.table("products").update({
                     "stock": int(new_s),  
                     "cost_price": new_c 
                 }).eq("id", pid).execute()
+                
+                # Inventory Movement
+                # [FIX UTAMA DI SINI] Pastikan unit_cost juga dikirim sebagai INT jika DB meminta INT
+                # Gunakan int(round(...)) untuk membulatkan harga
+                final_cost = cost if mode == 'IN' else old_c
                 
                 db_moves.append({
                     "product_id": pid, 
                     "movement_date": str(t_date),
                     "movement_type": "RECEIPT" if mode == 'IN' else "ISSUE",
                     "quantity_change": qty if mode == 'IN' else -qty,
-                    "unit_cost": cost, 
+                    "unit_cost": int(round(final_cost)), # <--- FIX: Konversi Harga ke Integer
                     "reference_id": f"JURNAL-{jid}"
                 })
 
