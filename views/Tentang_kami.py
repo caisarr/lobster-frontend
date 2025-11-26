@@ -24,7 +24,7 @@ with col2:
 
 # Informasi lebih Lanjut
 st.write("\n")
-st.subheader("Lebih banyak tentang kami", anchor=False)
+st.subheader("Lobster ID adalah pemasok lobster premium yang berdedikasi untuk menyediakan lobster air tawar dan air laut dengan kualitas terbaik untuk pasar Indonesia. Misi kami sederhana: menjembatani peternak terpilih dengan konsumen yang menghargai kualitas, kesegaran, dan keberlanjutan. Kami hanya menjual kualitas, bukan kuantitas.", anchor=False)
 st.write(
     """
 Budidaya LOBSTER.ID
