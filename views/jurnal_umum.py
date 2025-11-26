@@ -45,7 +45,7 @@ def jurnal_umum_form():
     # --- TABEL PREVIEW ---
     st.write("### Rincian Jurnal")
     
-    # [PENTING] Tombol Reset untuk membersihkan error "Data Nyangkut"
+    # [PENTING] Tombol Reset untuk membersihkan data lama yang error
     if st.button("🔄 Reset / Bersihkan Form"):
         st.session_state.journal_lines_manual = []
         st.rerun()
@@ -152,7 +152,7 @@ def jurnal_umum_form():
                     "inv_mode": inv_mode,
                     "product_id": prod_id,
                     "qty": safe_qty,
-                    "unit_cost": cost_input # Float di sini oke, nanti dikonversi saat simpan
+                    "unit_cost": cost_input 
                 }
                 st.session_state.journal_lines_manual.append(new_line)
                 st.rerun()
@@ -186,8 +186,8 @@ def save_transaction(entry_type, t_date, desc):
             db_lines.append({
                 "journal_id": jid, 
                 "account_code": row['Kode Akun'], 
-                "debit_amount": int(row['Debit']),   # Pastikan Integer
-                "credit_amount": int(row['Kredit'])  # Pastikan Integer
+                "debit_amount": int(row['Debit']),   
+                "credit_amount": int(row['Kredit'])  
             })
             
             # 3. Update Stok
@@ -210,14 +210,17 @@ def save_transaction(entry_type, t_date, desc):
                 elif mode == 'OUT':
                     new_s = old_s - qty
                 
-                # Update DB - STOK HARUS INT
+                # [FIX DATABASE ERROR]
+                # Paksa 'stock' dan 'cost_price' jadi INT agar DB Integer tidak menolak
+                final_stock = int(new_s)
+                final_cost_price = int(round(new_c)) # <-- FIX UTAMA DI SINI
+                
                 supabase.table("products").update({
-                    "stock": int(new_s),  
-                    "cost_price": new_c 
+                    "stock": final_stock,  
+                    "cost_price": final_cost_price 
                 }).eq("id", pid).execute()
                 
                 # Inventory Movement
-                # [PERBAIKAN UTAMA] Pastikan unit_cost dikirim sebagai Integer
                 final_cost = cost if mode == 'IN' else old_c
                 
                 db_moves.append({
@@ -225,7 +228,7 @@ def save_transaction(entry_type, t_date, desc):
                     "movement_date": str(t_date),
                     "movement_type": "RECEIPT" if mode == 'IN' else "ISSUE",
                     "quantity_change": qty if mode == 'IN' else -qty,
-                    "unit_cost": int(round(final_cost)), # <--- FIX: Paksa INT di sini!
+                    "unit_cost": int(round(final_cost)), # <-- FIX: Paksa INT di sini juga
                     "reference_id": f"JURNAL-{jid}"
                 })
 
