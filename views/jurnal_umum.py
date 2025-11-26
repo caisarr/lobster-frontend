@@ -137,7 +137,7 @@ def jurnal_umum_form():
             elif debit_val > 0 and credit_val > 0:
                 st.error("Pilih salah satu: Debit atau Kredit.")
             else:
-                # KONVERSI KE INT DI SINI AGAR TAMPILAN CLEAN
+                # KONVERSI KE INT DI SINI AGAR TAMPILAN BERSIH
                 safe_debit = int(round(debit_val))
                 safe_credit = int(round(credit_val))
                 safe_qty = int(qty_input)
@@ -152,7 +152,7 @@ def jurnal_umum_form():
                     "inv_mode": inv_mode,
                     "product_id": prod_id,
                     "qty": safe_qty,
-                    "unit_cost": cost_input # Biarkan float di sini, nanti di-convert saat simpan jika perlu
+                    "unit_cost": cost_input # Float di sini oke, nanti dikonversi saat simpan
                 }
                 st.session_state.journal_lines_manual.append(new_line)
                 st.rerun()
@@ -182,12 +182,12 @@ def save_transaction(entry_type, t_date, desc):
         db_moves = []
 
         for row in lines:
-            # 2. Lines (PASTIKAN SEMUA ANGKA DI-INT-KAN)
+            # 2. Lines (Pastikan amount dikirim sebagai Integer)
             db_lines.append({
                 "journal_id": jid, 
                 "account_code": row['Kode Akun'], 
-                "debit_amount": int(row['Debit']),   
-                "credit_amount": int(row['Kredit'])  
+                "debit_amount": int(row['Debit']),   # Pastikan Integer
+                "credit_amount": int(row['Kredit'])  # Pastikan Integer
             })
             
             # 3. Update Stok
@@ -217,8 +217,7 @@ def save_transaction(entry_type, t_date, desc):
                 }).eq("id", pid).execute()
                 
                 # Inventory Movement
-                # [FIX UTAMA DI SINI] Pastikan unit_cost juga dikirim sebagai INT jika DB meminta INT
-                # Gunakan int(round(...)) untuk membulatkan harga
+                # [PERBAIKAN UTAMA] Pastikan unit_cost dikirim sebagai Integer
                 final_cost = cost if mode == 'IN' else old_c
                 
                 db_moves.append({
@@ -226,7 +225,7 @@ def save_transaction(entry_type, t_date, desc):
                     "movement_date": str(t_date),
                     "movement_type": "RECEIPT" if mode == 'IN' else "ISSUE",
                     "quantity_change": qty if mode == 'IN' else -qty,
-                    "unit_cost": int(round(final_cost)), # <--- FIX: Konversi Harga ke Integer
+                    "unit_cost": int(round(final_cost)), # <--- FIX: Paksa INT di sini!
                     "reference_id": f"JURNAL-{jid}"
                 })
 
