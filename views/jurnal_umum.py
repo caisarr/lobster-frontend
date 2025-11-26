@@ -9,17 +9,20 @@ INVENTORY_ACCOUNTS = ['1-1200', '1-1400', '1-1500']
 @st.cache_data(ttl=60)
 def get_master_data():
     """Mengambil data Akun (COA) dan Produk untuk dropdown."""
-    # 1. Ambil COA
-    coa_res = supabase.table("chart_of_accounts").select("account_code, account_name").order("account_code").execute()
-    # Tambahkan placeholder
-    coa_options = ["--- Pilih Akun ---"] + [f"{a['account_code']} - {a['account_name']}" for a in coa_res.data]
-    coa_map = {f"{a['account_code']} - {a['account_name']}": a['account_code'] for a in coa_res.data}
+    try:
+        # 1. Ambil COA
+        coa_res = supabase.table("chart_of_accounts").select("account_code, account_name").order("account_code").execute()
+        coa_options = ["--- Pilih Akun ---"] + [f"{a['account_code']} - {a['account_name']}" for a in coa_res.data]
+        coa_map = {f"{a['account_code']} - {a['account_name']}": a['account_code'] for a in coa_res.data}
 
-    # 2. Ambil Produk
-    prod_res = supabase.table("products").select("id, name, inventory_account_code, cost_price, stock").execute()
-    prod_options = {f"{p['name']} (Stok: {p.get('stock', 0)})": p for p in prod_res.data}
-    
-    return coa_options, coa_map, prod_options
+        # 2. Ambil Produk
+        prod_res = supabase.table("products").select("id, name, inventory_account_code, cost_price, stock").execute()
+        prod_options = {f"{p['name']} (Stok: {p.get('stock', 0)})": p for p in prod_res.data}
+        
+        return coa_options, coa_map, prod_options
+    except Exception as e:
+        st.error(f"Gagal memuat data master: {e}")
+        return [], {}, {}
 
 def jurnal_umum_form():
     # Load Data
@@ -41,9 +44,15 @@ def jurnal_umum_form():
 
     # --- TABEL PREVIEW ---
     st.write("### Rincian Jurnal")
+    
+    # Tombol Reset untuk membersihkan error "Data Nyangkut"
+    if st.button("🔄 Reset / Bersihkan Form"):
+        st.session_state.journal_lines_manual = []
+        st.rerun()
+
     if st.session_state.journal_lines_manual:
         df_view = pd.DataFrame(st.session_state.journal_lines_manual)
-        # Format tampilan agar tidak ada koma desimal (.0)
+        # Format tampilan angka tanpa desimal (.0f)
         st.dataframe(df_view[['Akun', 'Debit', 'Kredit', 'Detail Stok']], use_container_width=True, hide_index=True)
         
         d_tot = df_view['Debit'].sum()
@@ -51,7 +60,7 @@ def jurnal_umum_form():
         color = "green" if d_tot == c_tot else "red"
         st.markdown(f"<h4 style='text-align:right; color:{color}'>Total Debit: {d_tot:,.0f} | Total Kredit: {c_tot:,.0f}</h4>", unsafe_allow_html=True)
     else:
-        st.info("Belum ada baris akun.")
+        st.info("Belum ada baris akun. Silakan tambah di bawah.")
 
     # --- FORM INPUT SMART ---
     st.divider()
@@ -75,10 +84,10 @@ def jurnal_umum_form():
         note_stok = ""
         
         if is_placeholder:
-            st.caption("Pilih akun untuk memulai input.")
+            st.caption("Pilih akun untuk memulai.")
             c1, c2 = st.columns(2)
-            c1.number_input("Debit", disabled=True)
-            c2.number_input("Kredit", disabled=True)
+            c1.text_input("Debit", disabled=True, value="0")
+            c2.text_input("Kredit", disabled=True, value="0")
             
         elif is_inv:
             st.info(f"📦 **Akun Persediaan Terdeteksi!**")
@@ -129,16 +138,21 @@ def jurnal_umum_form():
             elif debit_val > 0 and credit_val > 0:
                 st.error("Pilih salah satu: Debit atau Kredit.")
             else:
+                # KONVERSI KE INT DI SINI AGAR AMAN
+                safe_debit = int(round(debit_val))
+                safe_credit = int(round(credit_val))
+                safe_qty = int(qty_input)
+                
                 new_line = {
                     "Kode Akun": selected_code,
                     "Akun": selected_account_str,
-                    "Debit": int(debit_val),   # <-- UPDATE: Paksa jadi INT
-                    "Kredit": int(credit_val), # <-- UPDATE: Paksa jadi INT
+                    "Debit": safe_debit,
+                    "Kredit": safe_credit,
                     "Detail Stok": note_stok,
                     "is_inventory": is_inv,
                     "inv_mode": inv_mode,
                     "product_id": prod_id,
-                    "qty": int(qty_input),     # <-- UPDATE: Paksa jadi INT
+                    "qty": safe_qty,
                     "unit_cost": cost_input
                 }
                 st.session_state.journal_lines_manual.append(new_line)
@@ -170,17 +184,18 @@ def save_transaction(entry_type, t_date, desc):
 
         for row in lines:
             # 2. Lines (Pastikan amount dikirim sebagai Integer)
+            # Kita lakukan int() lagi untuk double protection
             db_lines.append({
                 "journal_id": jid, 
                 "account_code": row['Kode Akun'], 
-                "debit_amount": int(row['Debit']),   # <-- Fix Error 30000.0
-                "credit_amount": int(row['Kredit'])  # <-- Fix Error 30000.0
+                "debit_amount": int(row['Debit']),   
+                "credit_amount": int(row['Kredit'])  
             })
             
             # 3. Update Stok
             if row['is_inventory'] and row['product_id']:
                 pid = row['product_id']
-                qty = int(row['qty']) # <-- Fix Qty Integer
+                qty = int(row['qty']) 
                 cost = row['unit_cost']
                 mode = row['inv_mode']
                 
@@ -197,10 +212,14 @@ def save_transaction(entry_type, t_date, desc):
                 elif mode == 'OUT':
                     new_s = old_s - qty
                 
-                # Update DB (Stok wajib int)
+                # Update DB (Stok wajib int, Cost boleh float/int tergantung kolom)
+                # Kita gunakan int(new_s) agar aman. 
+                # Jika cost_price di DB integer, gunakan int(new_c), jika numeric biarkan float.
+                # Defaultnya kita biarkan float untuk cost, tapi stock wajib int.
+                
                 supabase.table("products").update({
-                    "stock": int(new_s),  # <-- Fix Stock Integer
-                    "cost_price": new_c
+                    "stock": int(new_s),  
+                    "cost_price": new_c 
                 }).eq("id", pid).execute()
                 
                 db_moves.append({
