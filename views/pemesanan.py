@@ -3,110 +3,81 @@ from supabase_client import supabase
 from midtrans_client import create_transaction
 import os
 
-# mendapatkan data produk (memastikan semua kolom diambil)
 def get_products():
-    # Mengambil semua kolom, termasuk kolom akuntansi yang baru ditambahkan
-    return supabase.table("products").select("*, cost_price, inventory_account_code, hpp_account_code").execute().data
+    return supabase.table("products").select("*").execute().data
 
-# membuat order
-def create_order(total_amount, address):
-    # Dapatkan user_id dari session state jika ada (untuk melengkapi tabel orders)
-    user_email = st.session_state.get('user_email')
-    
-    # Keterangan: midtrans_order_id diisi NULL di sini, akan diisi oleh webhook
+def create_order(total, address):
     return supabase.table("orders").insert({
-        "total_amount": total_amount,
-        "address": address,
-        "status": "pending",
-        # Anda dapat menambahkan kolom user_email jika ada di tabel orders
+        "total_amount": total, "address": address, "status": "pending"
     }).execute().data[0]
 
-# Menambahkan item pesanan
 def add_order_item(order_id, product_id, quantity, sub_total):
     supabase.table("order_items").insert({
-        "order_id": order_id,
-        "product_id": product_id,
-        "quantity": quantity,
-        "sub_total": sub_total
+        "order_id": order_id, "product_id": product_id, "quantity": quantity, "sub_total": sub_total
     }).execute()
 
-# Tampilkan produk kopi
 def show_products():
     products = get_products()
-    st.title(" Pemesanan ")
+    st.title("Pemesanan Produk")
 
-    if "cart" not in st.session_state:
-        st.session_state.cart = {}
+    if "cart" not in st.session_state: st.session_state.cart = {}
 
     for p in products:
-        # Perbaikan Error Gambar (Image URL check)
-        if p.get("image_url"):
-            st.image(p["image_url"], width=150)
-        else:
-            st.warning(f"Gambar untuk {p['name']} tidak ditemukan.")
-
-        st.write(f"**{p['name']}**")
-        st.write(p["description"])
-        st.write(f"Rp {p['price']:,}")
-        qty = st.number_input(f"Jumlah ({p['name']})", min_value=0, max_value=500, key=f"qty_{p['id']}")
-
-        if st.button(f"Tambah ke Keranjang", key=f"add_{p['id']}"):
-            if qty > 0:
-                if p["id"] in st.session_state.cart:
-                    st.session_state.cart[p["id"]]["qty"] += qty
-                else:
+        with st.container(border=True):
+            c1, c2 = st.columns([1, 3])
+            with c1:
+                if p.get("image_url"): st.image(p["image_url"])
+            with c2:
+                st.subheader(p['name'])
+                st.write(p["description"])
+                st.write(f"**Rp {p['price']:,}** | Stok: {p.get('stock', 0)}")
+                
+                qty = st.number_input(f"Beli {p['name']}", 0, p.get('stock', 0), key=f"q_{p['id']}")
+                if st.button("Tambah", key=f"btn_{p['id']}") and qty > 0:
                     st.session_state.cart[p["id"]] = {"product": p, "qty": qty}
-                st.success(f"{qty} {p['name']} ditambahkan ke keranjang")
+                    st.success("Masuk Keranjang")
 
-
-# Halaman keranjang dan pembayaran
 def show_cart_and_payment():
     cart = st.session_state.get("cart", {})
-    if not cart:
-        st.info("Keranjang kosong")
-        return
+    if not cart: return
 
+    st.divider()
+    st.subheader("Keranjang & Pembayaran")
     total = sum(item["product"]["price"] * item["qty"] for item in cart.values())
-    st.write("### Keranjang Anda")
-
-    for item_id, item in cart.items():
-        st.write(f"{item['product']['name']} x{item['qty']} = Rp {item['product']['price'] * item['qty']:,}")
-
-    st.write(f"**Total: Rp {total:,}**")
-
-    st.write("### Alamat Pengiriman")
-    address = st.text_area("Masukkan alamat lengkap Anda", placeholder="Jl. Kopi No. 1, Jakarta")
+    
+    for item in cart.values():
+        st.write(f"- {item['product']['name']} (x{item['qty']}) : Rp {item['product']['price'] * item['qty']:,}")
+    
+    st.markdown(f"### Total: Rp {total:,}")
+    address = st.text_area("Alamat Pengiriman")
 
     if st.button("Bayar Sekarang"):
-        if not address:
-            st.error("Alamat tidak boleh kosong!")
-            return
+        if not address: st.error("Isi alamat!"); return
+        
+        # [UPDATE] Validasi Stok Terakhir
+        for pid, item in cart.items():
+            curr = supabase.table("products").select("stock").eq("id", pid).execute().data[0]
+            if curr['stock'] < item['qty']:
+                st.error(f"Stok {item['product']['name']} habis/kurang! Sisa: {curr['stock']}")
+                return
 
-        # 1. Buat order awal di Supabase untuk mendapatkan Order ID
+        # Proses Checkout
         order = create_order(total, address)
-
-        # 2. Simpan semua item pesanan ke database
         for item in cart.values():
             add_order_item(order["id"], item["product"]["id"], item["qty"], item["product"]["price"] * item["qty"])
 
-        # 3. Buat transaksi Midtrans menggunakan Supabase Order ID
         snap_token = create_transaction(order["id"], total)
-        st.write("Klik tombol untuk membayar:")
+        
         st.components.v1.html(f"""
         <script src="https://app.sandbox.midtrans.com/snap/snap.js" data-client-key="{os.getenv('MIDTRANS_CLIENT_KEY')}"></script>
-        <button id="pay-button">Bayar Sekarang</button>
+        <button id="pay-button" style="background:#3b82f6;color:white;padding:10px;border:none;border-radius:5px;cursor:pointer;">LANJUT BAYAR</button>
         <script>
-            document.getElementById('pay-button').onclick = function() {{
-                snap.pay('{snap_token}');
-            }};
+            document.getElementById('pay-button').onclick = function() {{ snap.pay('{snap_token}'); }};
         </script>
-        """, height=1000)
+        """, height=100)
 
-# Main aplikasi
 def main():
-        show_products()
-        st.divider()
-        show_cart_and_payment()
+    show_products()
+    show_cart_and_payment()
 
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__": main()
