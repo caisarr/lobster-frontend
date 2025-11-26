@@ -41,19 +41,24 @@ with right_col:
 # --- FEATURES ---
 st.write("")
 st.write("---")
-st.subheader("Bagaimana Produk Kami Dirawat")
+st.subheader("Bagaimana Lobster Kami Dirawat")
 features = {
-    "Penanaman.png": [
-        "Penanaman dilakukan ditempat yang terjaga dan steril, sehingga memudahkan perawatan tanaman",
-        "Tempat untukpenanaman dapat membantu kopi bertumbuh di masa rentan dan mdapat membuat pohon kopi sehat dan menghasilkan buah yg baik.",
+    "1.jpg": [
+        "Air Steril dan Terkontrol
+Lobster kami hidup di air yang di monitor ketat dengan sistem filterisasi terbaik. Sehingga lobster hidup dengan sehat dan bebas stres.
+",
+        
     ],
-    "kopi mentah.png": [
-        "Kopi dipanen saat sudah mencapai tingkat matang maksimal",
-        "Cherry kopi yang sudah matang maksimal dapat emnghasilkan rasa yang lebih nikmat.",
+    "2.jpg": [
+        "Pakan Berkualiatas Tinggi
+​Semua lobster kami, mulai dari bibit hingga dewasa diberi pakan berkualitas premium dengan persentase protein yang sesuai standar (>35%).
+",
+
     ],
-    "Penjemuran.png": [
-        "Penjemuran ditempat yang sudah bersih dan steril",
-        "Penjemuran di tempat yg baik dan bersih akan menghasilkan kopi kering yang baunya tidak terkontaminasi dengan aroma yg merusak"
+    "3.jpg": [
+        Vitamin Wajib untuk Daya Tahan
+Selain pakan utama, kami rutin memberikan vitamin berupa Vitamin C dan E yang dicampur ke pakan.l"
+        
     ],
 }
 for image, description in features.items():
