@@ -13,25 +13,29 @@ def format_rupiah(amount):
         return f"(Rp {-amount:,.0f})".replace(",", "_").replace(".", ",").replace("_", ".")
     return f"Rp {amount:,.0f}".replace(",", "_").replace(".", ",").replace("_", ".")
 
-# --- DATA FETCHING ---
+# --- DATA FETCHING (UPDATED) ---
 @st.cache_data(ttl=60)
 def fetch_all_accounting_data():
     try:
         inv = supabase.table("inventory_movements").select("*, products(name)").execute()
         lines = supabase.table("journal_lines").select("*").execute()
-        entries = supabase.table("journal_entries").select("id, transaction_date, description, order_id").execute()
+        # [UPDATE] Ambil kolom entry_type
+        entries = supabase.table("journal_entries").select("id, transaction_date, description, order_id, entry_type").execute()
         coa = supabase.table("chart_of_accounts").select("*").execute()
         
         df_ent = pd.DataFrame(entries.data)
-        # Pre-process tanggal di level fetch untuk keamanan
         if not df_ent.empty:
             df_ent['transaction_date'] = pd.to_datetime(df_ent['transaction_date'], errors='coerce')
-            # Hapus timezone jika ada
             if df_ent['transaction_date'].dt.tz is not None:
                  df_ent['transaction_date'] = df_ent['transaction_date'].dt.tz_localize(None)
             df_ent['transaction_date'] = df_ent['transaction_date'].dt.normalize()
+            
+            # [UPDATE] Handle Entry Type
+            if 'entry_type' not in df_ent.columns:
+                df_ent['entry_type'] = 'REGULAR'
+            df_ent['entry_type'] = df_ent['entry_type'].fillna('REGULAR')
         else:
-            df_ent = pd.DataFrame(columns=['id', 'transaction_date', 'description', 'order_id'])
+            df_ent = pd.DataFrame(columns=['id', 'transaction_date', 'description', 'order_id', 'entry_type'])
 
         df_lines = pd.DataFrame(lines.data).fillna(0)
         if df_lines.empty:
@@ -48,14 +52,11 @@ def get_data(start, end):
     
     ent = d["entries"].copy(); lines = d["lines"]
     if ent.empty or lines.empty:
-        return pd.DataFrame(columns=['account_code', 'account_name', 'transaction_date', 'debit_amount', 'credit_amount', 'journal_id', 'description_entry', 'id']), d["coa"], d["mov"]
+        return pd.DataFrame(columns=['account_code', 'account_name', 'transaction_date', 'debit_amount', 'credit_amount', 'journal_id', 'description_entry', 'id', 'entry_type']), d["coa"], d["mov"]
     
-    # [FIX] Konversi Tanggal yang Aman dari Timezone Error
-    ent['transaction_date'] = pd.to_datetime(ent['transaction_date'])
-    if ent['transaction_date'].dt.tz is not None:
-        ent['transaction_date'] = ent['transaction_date'].dt.tz_localize(None)
-    
-    filt = ent.loc[ent['transaction_date'] <= pd.to_datetime(end)].copy()
+    # Filter Tanggal
+    mask = (ent['transaction_date'] >= pd.to_datetime(start)) & (ent['transaction_date'] <= pd.to_datetime(end))
+    filt = ent.loc[mask].copy()
     
     if 'description' in filt.columns: filt.rename(columns={'description': 'description_entry'}, inplace=True)
     merged = lines.merge(filt, left_on='journal_id', right_on='id', suffixes=('_line', '_entry'))
@@ -63,18 +64,17 @@ def get_data(start, end):
     return merged.sort_values(['transaction_date', 'journal_id', 'debit_amount'], ascending=[True, True, False]), d["coa"], d["mov"]
 
 def calc_tb(df, coa):
-    """Menghitung Neraca Saldo (TB) berdasarkan Saldo Netto (Debit/Kredit murni)"""
+    """Menghitung Neraca Saldo (TB)"""
     if df.empty:
         tb = coa[['account_code', 'account_name', 'account_type']].copy()
         tb['Debit'] = 0.0; tb['Kredit'] = 0.0
-        tb['Tipe_Num'] = tb['account_code'].str[0].apply(lambda x: int(x) if x.isdigit() else 0)
+        tb['Tipe_Num'] = tb['account_code'].str[0].apply(lambda x: int(x) if str(x).isdigit() else 0)
     else:
         tb = df.groupby('account_code').agg(D=('debit_amount', 'sum'), C=('credit_amount', 'sum')).reset_index()
         tb = tb.merge(coa, on='account_code', how='right').fillna(0)
-        tb['Tipe_Num'] = tb['account_code'].str[0].astype(int)
+        tb['Tipe_Num'] = tb['account_code'].str[0].apply(lambda x: int(x) if str(x).isdigit() else 0)
         tb['Net'] = tb['D'] - tb['C']
         
-        # Logika: Jika Net Positif, itu Debit. Jika Net Negatif, itu Kredit.
         tb['Debit'] = tb['Net'].apply(lambda x: x if x > 0 else 0)
         tb['Kredit'] = tb['Net'].apply(lambda x: abs(x) if x < 0 else 0)
     
@@ -89,6 +89,7 @@ def report_gj(df):
     is_first = df.groupby('journal_id').cumcount() == 0
     df['Tanggal'] = np.where(is_first, df['Tanggal'], '')
     df['description_entry'] = np.where(is_first, df['description_entry'], '')
+    # Tampilkan Tipe juga jika perlu
     return df[['Tanggal', 'account_code', 'Nama Akun', 'description_entry', 'debit_amount', 'credit_amount']].rename(columns={'account_code':'Kode Akun', 'description_entry':'Deskripsi', 'debit_amount':'Debit', 'credit_amount':'Kredit'})
 
 def report_gl(df, coa):
@@ -119,7 +120,6 @@ def report_gl(df, coa):
     return fin
 
 def report_inv(df):
-    """Laporan Kartu Persediaan (QTY TIDAK RP)"""
     if df.empty: return pd.DataFrame()
     if 'movement_date' in df.columns: df['movement_date'] = pd.to_datetime(df['movement_date']).dt.strftime('%Y-%m-%d')
     df['p_name'] = df['products'].apply(lambda x: x.get('name') if isinstance(x, dict) else 'Unknown')
@@ -140,14 +140,19 @@ def report_inv(df):
 
 def generate_reports():
     if "end_date" not in st.session_state: st.session_state.end_date = date(2025, 12, 31)
-    if "start_date" not in st.session_state: st.session_state.start_date = date(2025, 10, 31)
+    if "start_date" not in st.session_state: st.session_state.start_date = date(2025, 1, 1)
     s = st.sidebar.date_input("Mulai", st.session_state.start_date); e = st.sidebar.date_input("Akhir", st.session_state.end_date)
     
     df, coa, mov = get_data(s, e)
     
-    if not df.empty and 'journal_id' in df:
-        pre = df[df['journal_id'] < 200]; ajp = df[df['journal_id'] >= 200]
-    else: pre = df; ajp = df[0:0]
+    # --- [PERBAIKAN UTAMA] Logika Pemisahan Data Berdasarkan ENTRY_TYPE ---
+    if not df.empty and 'entry_type' in df.columns:
+        # Filter Regular vs AJP
+        pre = df[df['entry_type'] == 'REGULAR']
+        ajp = df[df['entry_type'] == 'AJP']
+    else:
+        # Fallback jika kolom belum ada atau data kosong
+        pre = df; ajp = df[0:0]
     
     tb_pre = calc_tb(pre, coa); tb_ajp = calc_tb(ajp, coa)
     
@@ -166,7 +171,7 @@ def generate_reports():
     ws[['Adj D', 'Adj K']] = ws.apply(lambda x: pd.Series(calc_adj(x)), axis=1)
     
     df_calc = ws[['Kode Akun', 'Nama Akun', 'Tipe', 'Adj D', 'Adj K']].rename(columns={'Adj D':'Debit', 'Adj K':'Kredit'})
-    df_calc['Tipe_Num'] = df_calc['Kode Akun'].str[0].astype(int)
+    df_calc['Tipe_Num'] = df_calc['Kode Akun'].str[0].apply(lambda x: int(x) if str(x).isdigit() else 0)
     
     inc, is_df, re_df, bs_df, ws_fin = calculate_closing_and_reporting_data(df_calc)
     
@@ -181,12 +186,12 @@ def generate_reports():
     }
 
 def calculate_closing_and_reporting_data(df_tb_adj):
+    # LOGIKA LAPORAN DETAIL TETAP DIPERTAHANKAN
     AKUN_MODAL = '3-1100'; AKUN_PRIVE = '3-1200'
     Total_Revenue = df_tb_adj[df_tb_adj['Tipe_Num'].isin([4, 8])]['Kredit'].sum()
     Total_Expense = df_tb_adj[df_tb_adj['Tipe_Num'].isin([5, 6, 9])]['Debit'].sum()
     prive_val = df_tb_adj[df_tb_adj['Kode Akun'] == AKUN_PRIVE]['Debit'].sum()
     
-    # Modal Awal (Ambil dari TB Adj Kredit, sebelum ditambah Laba)
     modal_awal = df_tb_adj[df_tb_adj['Kode Akun'] == AKUN_MODAL]['Kredit'].sum()
     
     Net_Income = Total_Revenue - Total_Expense
@@ -210,6 +215,7 @@ def calculate_closing_and_reporting_data(df_tb_adj):
     return Net_Income, df_is, df_re, df_bs, df_ws_final
 
 def create_income_statement_df(df_tb_adj, Total_Revenue, Total_Expense, Net_Income):
+    # MENYIMPAN RINCIAN AKUN (TIDAK DIHAPUS)
     data = []
     df_is = df_tb_adj[df_tb_adj['Tipe_Num'].isin([4, 5, 6, 8, 9])].copy()
     def get_sum(tipe, col): return df_is[df_is['Tipe_Num'].isin(tipe)][col].sum()
@@ -274,6 +280,7 @@ def create_balance_sheet_df(df_tb_adj, Modal_Akhir):
     return pd.DataFrame(data, columns=['Deskripsi', 'Jumlah 1', 'Jumlah 2'])
 
 def create_cashflow(df_journal):
+    # LOGIKA ARUS KAS TETAP
     if df_journal.empty: return pd.DataFrame(columns=['Deskripsi', 'Jumlah', 'Total'])
     df_cash = df_journal[df_journal['account_code'] == '1-1100'].copy()
     op_in, op_out, inv, fin = [], [], [], []
@@ -302,6 +309,13 @@ def create_cashflow(df_journal):
     data.append(['KENAIKAN (PENURUNAN) BERSIH KAS', '', (t_op_in + t_op_out) + t_inv + t_fin])
     return pd.DataFrame(data, columns=['Deskripsi', 'Jumlah', 'Total'])
 
+def to_excel_bytes(reports):
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        for name, df in reports.items():
+            if isinstance(df, pd.DataFrame): df.to_excel(writer, sheet_name=name[:30], index=False)
+    return output.getvalue()
+
 def show_reports_page():
     st.title("📊 Laporan Keuangan")
     st.sidebar.header("Filter")
@@ -311,7 +325,6 @@ def show_reports_page():
     def fmt(df):
         d = df.copy()
         for c in d.columns:
-            # Format Rupiah untuk kolom uang (KECUALI Qty)
             if any(x in c for x in ['Debit','Kredit','D','K','J','T','Nilai','Biaya']) and 'Qty' not in c:
                 d[c] = d[c].apply(lambda x: format_rupiah(x) if isinstance(x, (int,float)) else x)
         return d
@@ -326,12 +339,5 @@ def show_reports_page():
     st.header("7. Arus Kas"); st.dataframe(fmt(rep["CF"]), hide_index=True, use_container_width=True)
     st.header("8. Kartu Persediaan"); st.dataframe(fmt(rep["Kartu"]), hide_index=True, use_container_width=True)
     st.download_button("📥 Download Excel", data=to_excel_bytes(rep), file_name="Laporan_Keuangan.xlsx")
-
-def to_excel_bytes(reports):
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        for name, df in reports.items():
-            if isinstance(df, pd.DataFrame): df.to_excel(writer, sheet_name=name[:30], index=False)
-    return output.getvalue()
 
 if __name__ == "__main__": show_reports_page()
