@@ -17,12 +17,9 @@ st.sidebar.image("assets/lobster.png", width=200)
 st.sidebar.markdown("Dibuat oleh Kelompok 13")
 
 # --- COOKIE MANAGER SETUP (DIPERBAIKI) ---
-# Hapus parameter experimental_allow_widgets=True yang menyebabkan error
-@st.cache_resource
-def get_cookie_manager():
-    return stx.CookieManager()
-
-cookie_manager = get_cookie_manager()
+# Hapus @st.cache_resource agar tidak muncul CachedWidgetWarning
+# Kita inisialisasi langsung karena komponen ini perlu dirender setiap rerun
+cookie_manager = stx.CookieManager()
 
 # --- AUTH FUNCTIONS ---
 def sign_up(email, password):
@@ -65,6 +62,7 @@ def check_session():
     # Jika session state kosong, coba cari di cookie
     if "user_email" not in st.session_state or st.session_state.user_email is None:
         try:
+            # Ambil token dari cookie
             token = cookie_manager.get("sb_token")
             role = cookie_manager.get("user_role")
             
@@ -77,7 +75,7 @@ def check_session():
                     st.session_state.user_role = role
                     st.toast("Sesi dipulihkan!", icon="🔄")
         except Exception as e:
-            # Jika token invalid atau error lain, abaikan saja (user harus login ulang)
+            # Jika token invalid atau error lain, abaikan saja
             pass
 
 # --- BUYER APP (PEMBELI) ---
@@ -162,7 +160,7 @@ def auth_screen():
                     cookie_manager.set("sb_token", session.session.access_token, expires_at=None) 
                     cookie_manager.set("user_role", role, expires_at=None)
                 except Exception as e:
-                    st.warning("Gagal menyimpan sesi browser, login mungkin ter-reset saat refresh.")
+                    pass
 
                 st.success(f"Login Berhasil! Mengalihkan...")
                 time.sleep(1) 
@@ -178,6 +176,7 @@ if "user_email" not in st.session_state:
 if st.session_state.user_email:
     # Logika Pengarah Halaman
     if st.session_state.user_role == "Penjual":
+        # Pastikan email admin sesuai
         if st.session_state.user_email == "c4isar@gmail.com": 
             seller_app(st.session_state.user_email)
         else:
