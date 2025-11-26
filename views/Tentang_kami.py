@@ -27,10 +27,11 @@ st.write("\n")
 st.subheader("Lebih banyak tentang kami", anchor=False)
 st.write(
     """
-    - Lobster enak
-    - Aku cinta lobster
-    - Lobster adalah temanku
-    - Hidup Lobster
+Budidaya LOBSTER.ID
+- Bibit unggul berkualitas
+- Pakan teruji efisien
+- Panen melimpah untung
+- Pesan sekarang, cepat!
     """
 )
 
