@@ -31,7 +31,7 @@ with left_col:
     st.write(PRODUCT_DESCRIPTION)
 with right_col:
     # Pastikan file 'produkk.png' ada di folder 'assets'
-    product_image = Image.open(ASSETS_DIR / "produkk.png")
+    product_image = Image.open(ASSETS_DIR / "4.jpg")
     st.image(product_image, width=500)
 
 # --- FEATURES ---
