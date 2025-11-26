@@ -74,7 +74,7 @@ def show_cart_and_payment():
         <script>
             document.getElementById('pay-button').onclick = function() {{ snap.pay('{snap_token}'); }};
         </script>
-        """, height=100)
+        """, height=750, scrolling=True)
 
 def main():
     show_products()
