@@ -6,19 +6,65 @@ import os
 import pandas as pd
 import time
 
+# --- SETUP PAGE CONFIG (Wajib di baris pertama) ---
+st.set_page_config(page_title="Lobster ID", page_icon="🦞", layout="wide")
+
 # Load Env
 load_dotenv()
 supabase_url = os.getenv("SUPABASE_URL")
 supabase_key = os.getenv("SUPABASE_KEY")
 supabase: Client = create_client(supabase_url, supabase_key)
 
-# Sidebar Shared
-st.sidebar.image("assets/lobster.png", width=200)
-st.sidebar.markdown("Dibuat oleh Kelompok 13")
+# --- UTILS: CUSTOM CSS (Global Styling) ---
+def inject_custom_css():
+    st.markdown("""
+    <style>
+        /* Import Google Font */
+        @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600&display=swap');
+        
+        html, body, [class*="css"] {
+            font-family: 'Poppins', sans-serif;
+        }
+        
+        /* Background & Sidebar */
+        .stApp { background-color: #F8F9FA; }
+        [data-testid="stSidebar"] { background-color: #ffffff; border-right: 1px solid #e0e0e0; }
 
-# --- COOKIE MANAGER SETUP (DIPERBAIKI) ---
-# Hapus @st.cache_resource agar tidak muncul CachedWidgetWarning
-# Kita inisialisasi langsung karena komponen ini perlu dirender setiap rerun
+        /* Tombol Utama - Merah Lobster */
+        .stButton > button {
+            background-color: #FF6F61; 
+            color: white; border: none; border-radius: 8px;
+            padding: 10px 24px; font-weight: 600;
+            transition: all 0.3s ease;
+        }
+        .stButton > button:hover {
+            background-color: #e65b50; box-shadow: 0 4px 6px rgba(0,0,0,0.1); color: white;
+        }
+
+        /* Metrics di Dashboard */
+        [data-testid="stMetricValue"] { font-size: 24px; color: #FF6F61; }
+        
+        /* Card Style */
+        div[data-testid="stVerticalBlock"] > div[style*="border"] {
+            background-color: white;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+        }
+    </style>
+    """, unsafe_allow_html=True)
+
+# Panggil CSS
+inject_custom_css()
+
+# --- SIDEBAR ---
+with st.sidebar:
+    # Logo & Info
+    st.image("assets/lobster.png", width=150)
+    st.markdown("### Lobster ID")
+    st.caption("Suplier Lobster Premium")
+    st.write("---")
+
+# --- COOKIE MANAGER ---
 cookie_manager = stx.CookieManager()
 
 # --- AUTH FUNCTIONS ---
@@ -41,79 +87,74 @@ def sign_in(email, password):
 def sign_out():
     try:
         supabase.auth.sign_out()
-    except:
-        pass
+    except: pass
     
-    # Hapus Session & Cookies
     st.session_state.user_email = None
     st.session_state.user_role = None
-    
-    # Hapus cookie dari browser
     try:
         cookie_manager.delete("sb_token")
         cookie_manager.delete("user_role")
-    except:
-        pass
-    
+    except: pass
     st.rerun()
 
-# --- FUNGSI CEK SESI OTOMATIS (AUTO LOGIN) ---
 def check_session():
-    # Jika session state kosong, coba cari di cookie
     if "user_email" not in st.session_state or st.session_state.user_email is None:
         try:
-            # Ambil token dari cookie
             token = cookie_manager.get("sb_token")
             role = cookie_manager.get("user_role")
-            
             if token and role:
-                # Validasi token ke Supabase
                 user = supabase.auth.get_user(token)
                 if user:
-                    # Jika valid, restore session
                     st.session_state.user_email = user.user.email
                     st.session_state.user_role = role
-                    st.toast("Sesi dipulihkan!", icon="🔄")
-        except Exception as e:
-            # Jika token invalid atau error lain, abaikan saja
-            pass
+        except: pass
 
-# --- BUYER APP (PEMBELI) ---
+# --- APP PAGES ---
+
+# 1. BUYER APP
 def buyer_app():
     pg = st.navigation({
-        "Menu": [
+        "Menu Utama": [
+            st.Page("views/pemesanan.py", title="Belanja Lobster", icon=":material/shopping_cart:", default=True),
+            st.Page("views/info_produk.py", title="Info Produk", icon=":material/inventory_2:"),
             st.Page("views/Tentang_kami.py", title="Tentang Kami", icon=":material/info:"),
-            st.Page("views/info_produk.py", title="Produk", icon=":material/inventory_2:"),
-            st.Page("views/pemesanan.py", title="Pemesanan", icon=":material/shopping_cart:", default=True),
         ]
     })
     pg.run()
 
-# --- SELLER APP (PENJUAL) ---
+# 2. SELLER DASHBOARD (Dipercantik)
 def dashboard_page():
-    st.title("Dashboard Penjual 🦞")
+    st.title("Dashboard Penjual 📊")
+    st.markdown("Pantau performa bisnis Lobster ID secara real-time.")
+    st.write("---")
+    
     try:
         orders = supabase.table("orders").select("total_amount, status").execute().data
         df_ord = pd.DataFrame(orders)
         
-        omset = 0
-        pending = 0
+        omset = 0; pending = 0
         if not df_ord.empty:
             omset = df_ord[df_ord['status']=='settle']['total_amount'].sum()
             pending = len(df_ord[df_ord['status']=='pending'])
         
-        # Pastikan kolom 'stock' sudah ditambahkan di database
         products = supabase.table("products").select("name, stock").lt("stock", 10).execute().data
         
+        # UI Metrics Modern
         c1, c2, c3 = st.columns(3)
-        c1.metric("Total Omset", f"Rp {omset:,.0f}")
-        c2.metric("Order Pending", f"{pending}")
-        c3.metric("Stok Kritis", f"{len(products) if products else 0} Item")
+        with c1:
+            with st.container(border=True):
+                st.metric("Total Omset", f"Rp {omset:,.0f}", delta="Settled Orders")
+        with c2:
+            with st.container(border=True):
+                st.metric("Order Pending", f"{pending}", delta="Perlu Proses", delta_color="inverse")
+        with c3:
+            with st.container(border=True):
+                st.metric("Stok Kritis", f"{len(products) if products else 0} Item", delta="Segera Restock", delta_color="inverse")
         
-        st.divider()
+        st.write("")
         if products:
             st.warning("⚠️ Stok Menipis (<10 Unit)")
-            st.dataframe(products, use_container_width=True)
+            st.dataframe(pd.DataFrame(products), use_container_width=True)
             
     except Exception as e:
         st.error(f"Gagal memuat dashboard: {e}")
@@ -123,72 +164,79 @@ def seller_app(user_email):
         "Utama": [
             st.Page(dashboard_page, title="Dashboard", icon=":material/dashboard:", default=True)
         ],
-        "Akuntansi": [
-            st.Page("views/jurnal_umum.py", title="Jurnal & AJP", icon=":material/edit_document:"),
+        "Keuangan": [
+            st.Page("views/jurnal_umum.py", title="Jurnal Umum", icon=":material/edit_document:"),
             st.Page("views/laporan_keuangan.py", title="Laporan Keuangan", icon=":material/analytics:"),
         ]
     })
     pg.run()
 
-# --- MAIN SCREEN (LOGIN / REGISTER) ---
+# 3. AUTH SCREEN (Dipercantik)
 def auth_screen():
-    st.title("Akses Lobster ID")
+    st.write("")
+    st.write("")
     
-    action = st.selectbox("Pilih Tindakan", ["Masuk", "Buat Akun"])
-    role = st.radio("Masuk Sebagai:", ["Pembeli", "Penjual"])
+    # Layout Tengah
+    c1, c2, c3 = st.columns([1, 1.5, 1])
     
-    with st.form("auth_form"):
-        email = st.text_input("Email")
-        password = st.text_input("Password", type="password")
-        submit = st.form_submit_button(action)
-    
-    if submit:
-        if action == "Buat Akun":
-            user = sign_up(email, password)
-            if user and user.user:
-                st.success("Akun berhasil dibuat! Silakan cek email lalu Login.")
-        
-        elif action == "Masuk":
-            session = sign_in(email, password)
-            if session and session.user:
-                # 1. Set Session State
-                st.session_state.user_email = session.user.email
-                st.session_state.user_role = role
+    with c2:
+        with st.container(border=True):
+            st.markdown("<h2 style='text-align: center; color: #2C3E50;'>Lobster ID</h2>", unsafe_allow_html=True)
+            st.markdown("<p style='text-align: center; color: gray;'>Masuk untuk mengelola pesanan atau berbelanja.</p>", unsafe_allow_html=True)
+            
+            action = st.selectbox("Pilih Tindakan", ["Masuk", "Buat Akun"], label_visibility="collapsed")
+            role = st.radio("Sebagai:", ["Pembeli", "Penjual"], horizontal=True)
+            
+            st.write("---")
+            with st.form("auth_form"):
+                email = st.text_input("Email", placeholder="nama@email.com")
+                password = st.text_input("Password", type="password", placeholder="********")
+                st.write("")
                 
-                # 2. SIMPAN COOKIES (Agar tahan refresh)
-                try:
-                    cookie_manager.set("sb_token", session.session.access_token, expires_at=None) 
-                    cookie_manager.set("user_role", role, expires_at=None)
-                except Exception as e:
-                    pass
+                btn_text = "🚀 Masuk Sekarang" if action == "Masuk" else "✨ Daftar Akun"
+                submit = st.form_submit_button(btn_text, use_container_width=True)
+            
+            if submit:
+                if action == "Buat Akun":
+                    user = sign_up(email, password)
+                    if user and user.user:
+                        st.success("Akun dibuat! Silakan Login.")
+                
+                elif action == "Masuk":
+                    session = sign_in(email, password)
+                    if session and session.user:
+                        st.session_state.user_email = session.user.email
+                        st.session_state.user_role = role
+                        try:
+                            cookie_manager.set("sb_token", session.session.access_token, expires_at=None) 
+                            cookie_manager.set("user_role", role, expires_at=None)
+                        except: pass
 
-                st.success(f"Login Berhasil! Mengalihkan...")
-                time.sleep(1) 
-                st.rerun()
+                        st.toast("Login Berhasil!", icon="🎉")
+                        time.sleep(1) 
+                        st.rerun()
 
 # --- ENTRY POINT ---
-# 1. Jalankan pengecekan cookie di awal aplikasi
 check_session()
 
 if "user_email" not in st.session_state:
     st.session_state.user_email = None
 
 if st.session_state.user_email:
-    # Logika Pengarah Halaman
+    # Sidebar User Info
+    st.sidebar.write(f"👤 **{st.session_state.user_email}**")
+    st.sidebar.caption(f"Role: {st.session_state.user_role}")
+    if st.sidebar.button("Logout", use_container_width=True):
+        sign_out()
+        
+    # Routing
     if st.session_state.user_role == "Penjual":
-        # Pastikan email admin sesuai
         if st.session_state.user_email == "c4isar@gmail.com": 
             seller_app(st.session_state.user_email)
         else:
-            st.error("Akses Ditolak. Akun ini tidak terdaftar sebagai Penjual/Admin.")
-            if st.button("Logout"):
-                sign_out()
+            st.error("Akses Ditolak. Anda bukan Admin.")
+            if st.button("Logout"): sign_out()
     else:
         buyer_app()
-    
-    with st.sidebar:
-        st.divider()
-        if st.button("Logout"):
-            sign_out()
 else:
     auth_screen()
