@@ -11,7 +11,7 @@ def format_rupiah(amount):
     if amount < 0: return f"(Rp {-amount:,.0f})".replace(",", ".")
     return f"Rp {amount:,.0f}".replace(",", ".")
 
-# --- DATA FETCHING ---
+# --- DATA FETCHING (FIXED TIMEZONE BUG) ---
 @st.cache_data(ttl=60)
 def fetch_all_accounting_data():
     try:
@@ -22,7 +22,17 @@ def fetch_all_accounting_data():
         
         df_ent = pd.DataFrame(entries.data)
         if not df_ent.empty:
-            df_ent['transaction_date'] = pd.to_datetime(df_ent['transaction_date']).dt.normalize()
+            # [FIX] Konversi ke Datetime
+            df_ent['transaction_date'] = pd.to_datetime(df_ent['transaction_date'])
+            
+            # [FIX] Hapus Zona Waktu (UTC) agar bisa dibandingkan dengan input user
+            if df_ent['transaction_date'].dt.tz is not None:
+                df_ent['transaction_date'] = df_ent['transaction_date'].dt.tz_localize(None)
+            
+            # [FIX] Set jam ke 00:00:00 (Normalize)
+            df_ent['transaction_date'] = df_ent['transaction_date'].dt.normalize()
+            
+            # Handle Entry Type
             if 'entry_type' not in df_ent.columns: df_ent['entry_type'] = 'REGULAR'
             df_ent['entry_type'] = df_ent['entry_type'].fillna('REGULAR')
         else:
@@ -40,15 +50,17 @@ def get_data(start, end):
     ent = d["entries"].copy(); lines = d["lines"]
     if ent.empty or lines.empty: return pd.DataFrame(), d["coa"], d["mov"]
     
+    # Filter Tanggal (Sekarang aman karena zona waktu sudah dihapus)
     mask = (ent['transaction_date'] >= pd.to_datetime(start)) & (ent['transaction_date'] <= pd.to_datetime(end))
     filt = ent.loc[mask].copy()
+    
     if 'description' in filt.columns: filt.rename(columns={'description': 'description_entry'}, inplace=True)
     
     merged = lines.merge(filt, left_on='journal_id', right_on='id')
     merged = merged.merge(d["coa"], on='account_code')
     return merged, d["coa"], d["mov"]
 
-# --- CALCULATION LOGIC (Sama, hanya dirapikan) ---
+# --- CALCULATION LOGIC ---
 def calc_tb(df, coa):
     if df.empty:
         tb = coa.copy(); tb['Debit'] = 0.0; tb['Kredit'] = 0.0
@@ -87,7 +99,7 @@ def generate_financial_data(df, coa):
     Net_Income = Rev - Exp
     
     Prive = ws[ws['account_code'] == AKUN_PRIVE]['Adj D'].sum()
-    Modal_Awal = ws[ws['account_code'] == AKUN_MODAL]['TB K'].sum() # Asumsi TB K adalah modal awal periode
+    Modal_Awal = ws[ws['account_code'] == AKUN_MODAL]['TB K'].sum() 
     Modal_Akhir = Modal_Awal + Net_Income - Prive
     
     return ws, Net_Income, Rev, Exp, Modal_Akhir
@@ -112,8 +124,11 @@ def show_reports_page():
         st.header("Filter Periode")
         start_d = st.date_input("Mulai", date(date.today().year, 1, 1))
         end_d = st.date_input("Akhir", date(date.today().year, 12, 31))
+        
+        # [PENTING] Tombol ini juga akan membersihkan cache lama yang error
         if st.button("🔄 Refresh Data", use_container_width=True): 
-            st.cache_data.clear(); st.rerun()
+            st.cache_data.clear()
+            st.rerun()
 
     # Get Data
     df_journal, coa, mov = get_data(start_d, end_d)
