@@ -1,249 +1,222 @@
 import streamlit as st
 import pandas as pd
 from supabase_client import supabase
-from io import BytesIO
 from datetime import date
-import numpy as np
 
-# --- 1. STYLING CSS UTAMA ---
-def inject_report_css():
+# --- CONFIG & STYLING ---
+INVENTORY_ACCOUNTS = ['1-1200', '1-1400', '1-1500'] 
+
+def inject_journal_css():
     st.markdown("""
         <style>
-            .metric-card {
-                background-color: #ffffff;
-                border: 1px solid #e0e0e0;
-                border-radius: 12px;
-                padding: 20px;
-                text-align: center;
-                box-shadow: 0 2px 10px rgba(0,0,0,0.03);
-                transition: transform 0.2s;
+            /* Header Style */
+            .journal-title-card {
+                background: linear-gradient(120deg, #4facfe 0%, #00f2fe 100%);
+                padding: 25px;
+                border-radius: 15px;
+                color: white;
+                box-shadow: 0 4px 15px rgba(0, 242, 254, 0.3);
+                margin-bottom: 25px;
             }
-            .metric-card:hover { transform: translateY(-5px); box-shadow: 0 5px 15px rgba(0,0,0,0.1); }
-            .metric-label { font-size: 0.9rem; color: #666; font-weight: 600; text-transform: uppercase; }
-            .metric-value { font-size: 1.8rem; font-weight: 700; margin: 10px 0; }
-            .metric-pos { color: #28a745; }
-            .metric-neg { color: #dc3545; }
-            .metric-neutral { color: #007bff; }
+            .journal-title-card h2 { margin: 0; color: white; text-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+            
+            /* Form Container */
+            .stForm {
+                background-color: white;
+                padding: 20px;
+                border-radius: 12px;
+                border: 1px solid #e0e0e0;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+            }
+            
+            /* Success/Error Message */
+            .balance-status {
+                padding: 15px;
+                border-radius: 10px;
+                font-weight: bold;
+                text-align: center;
+                margin-top: 10px;
+            }
+            .status-ok { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+            .status-err { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
         </style>
     """, unsafe_allow_html=True)
 
-# --- 2. DATA FETCHING (FIX TIMEZONE) ---
 @st.cache_data(ttl=60)
-def fetch_all_accounting_data():
+def get_master_data():
     try:
-        inv = supabase.table("inventory_movements").select("*, products(name)").execute()
-        lines = supabase.table("journal_lines").select("*").execute()
-        entries = supabase.table("journal_entries").select("*").execute()
-        coa = supabase.table("chart_of_accounts").select("*").execute()
+        coa_res = supabase.table("chart_of_accounts").select("account_code, account_name").order("account_code").execute()
+        coa_options = ["--- Pilih Akun ---"] + [f"{a['account_code']} - {a['account_name']}" for a in coa_res.data]
+        coa_map = {f"{a['account_code']} - {a['account_name']}": a['account_code'] for a in coa_res.data}
         
-        df_ent = pd.DataFrame(entries.data)
-        if not df_ent.empty:
-            # FIX: Convert & Remove Timezone
-            df_ent['transaction_date'] = pd.to_datetime(df_ent['transaction_date'])
-            if df_ent['transaction_date'].dt.tz is not None:
-                df_ent['transaction_date'] = df_ent['transaction_date'].dt.tz_localize(None)
-            df_ent['transaction_date'] = df_ent['transaction_date'].dt.normalize()
-            
-            if 'entry_type' not in df_ent.columns: df_ent['entry_type'] = 'REGULAR'
-            df_ent['entry_type'] = df_ent['entry_type'].fillna('REGULAR')
-        else:
-            df_ent = pd.DataFrame(columns=['id', 'transaction_date', 'description', 'order_id', 'entry_type'])
-
-        df_lines = pd.DataFrame(lines.data).fillna(0)
-        return {"lines": df_lines, "entries": df_ent, "coa": pd.DataFrame(coa.data), "mov": pd.DataFrame(inv.data)}
+        prod_res = supabase.table("products").select("id, name, inventory_account_code, cost_price, stock").execute()
+        prod_options = {f"{p['name']} (Stok: {p.get('stock', 0)})": p for p in prod_res.data}
+        
+        return coa_options, coa_map, prod_options
     except Exception as e:
-        st.error(f"Data Error: {e}"); return {}
+        st.error(f"Gagal memuat data master: {e}"); return [], {}, {}
 
-def get_filtered_data(start, end):
-    d = fetch_all_accounting_data()
-    if not d: return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+def jurnal_umum_form():
+    inject_journal_css()
+    coa_options, coa_map, prod_options = get_master_data()
     
-    ent = d["entries"].copy(); lines = d["lines"]
-    if ent.empty: return pd.DataFrame(), d["coa"], d["mov"]
-    
-    # Filtering aman karena timezone sudah dihapus
-    mask = (ent['transaction_date'] >= pd.to_datetime(start)) & (ent['transaction_date'] <= pd.to_datetime(end))
-    filt = ent.loc[mask].copy()
-    if 'description' in filt.columns: filt.rename(columns={'description': 'description_entry'}, inplace=True)
-    
-    merged = lines.merge(filt, left_on='journal_id', right_on='id').merge(d["coa"], on='account_code')
-    return merged, d["coa"], d["mov"]
+    if "journal_lines_manual" not in st.session_state:
+        st.session_state.journal_lines_manual = []
 
-# --- 3. LOGIKA KEUANGAN ---
-def generate_financial_report(df, coa):
-    # Neraca Saldo Helper
-    def calc_tb(df_in):
-        if df_in.empty: 
-            tb = coa.copy(); tb['Debit']=0.0; tb['Kredit']=0.0; return tb
-        tb = df_in.groupby('account_code').agg(D=('debit_amount','sum'), C=('credit_amount','sum')).reset_index()
-        tb = tb.merge(coa, on='account_code', how='right').fillna(0)
-        tb['Net'] = tb['D'] - tb['C']
-        tb['Debit'] = tb['Net'].apply(lambda x: x if x>0 else 0)
-        tb['Kredit'] = tb['Net'].apply(lambda x: abs(x) if x<0 else 0)
-        return tb
-
-    pre = df[df['entry_type'] == 'REGULAR'] if not df.empty and 'entry_type' in df.columns else df
-    ajp = df[df['entry_type'] == 'AJP'] if not df.empty and 'entry_type' in df.columns else df[0:0]
-    
-    tb_pre = calc_tb(pre)
-    tb_ajp = calc_tb(ajp)
-    
-    # Merge Worksheet
-    ws = coa[['account_code', 'account_name', 'account_type']].copy()
-    ws = ws.merge(tb_pre[['account_code','Debit','Kredit']], on='account_code', how='left').fillna(0).rename(columns={'Debit':'TB_D', 'Kredit':'TB_K'})
-    ws = ws.merge(tb_ajp[['account_code','Debit','Kredit']], on='account_code', how='left').fillna(0).rename(columns={'Debit':'MJ_D', 'Kredit':'MJ_K'})
-    
-    ws['Net_Adj'] = (ws['TB_D'] - ws['TB_K']) + (ws['MJ_D'] - ws['MJ_K'])
-    ws['Adj_D'] = ws['Net_Adj'].apply(lambda x: x if x>=0 else 0)
-    ws['Adj_K'] = ws['Net_Adj'].apply(lambda x: abs(x) if x<0 else 0)
-    ws['Tipe_Num'] = ws['account_code'].str[0].apply(lambda x: int(x) if str(x).isdigit() else 0)
-    
-    # Kalkulasi Laba Rugi & Neraca
-    Rev = ws[ws['Tipe_Num'].isin([4, 8])]['Adj_K'].sum()
-    Exp = ws[ws['Tipe_Num'].isin([5, 6, 9])]['Adj_D'].sum()
-    Net_Income = Rev - Exp
-    
-    Prive = ws[ws['account_code'] == '3-1200']['Adj_D'].sum()
-    Modal_Awal = ws[ws['account_code'] == '3-1100']['TB_K'].sum()
-    Modal_Akhir = Modal_Awal + Net_Income - Prive
-    
-    return ws, Net_Income, Rev, Exp, Modal_Akhir
-
-# --- 4. HALAMAN UTAMA ---
-def show_reports_page():
-    inject_report_css()
-    st.title("📊 Laporan Keuangan & Analisis")
-    
-    # Sidebar
-    with st.sidebar:
-        st.header("⚙️ Filter")
-        start_d = st.date_input("Dari Tanggal", date(date.today().year, 1, 1))
-        end_d = st.date_input("Sampai Tanggal", date(date.today().year, 12, 31))
-        if st.button("🔄 Refresh Data", type="primary"): 
-            st.cache_data.clear(); st.rerun()
-
-    # Process Data
-    df_journal, coa, mov = get_filtered_data(start_d, end_d)
-    ws, net_inc, rev, exp, equity = generate_financial_report(df_journal, coa)
-    
-    # --- A. METRIC CARDS ---
-    c1, c2, c3, c4 = st.columns(4)
-    def metric_html(label, val, color_cls):
-        return f"""
-        <div class="metric-card">
-            <div class="metric-label">{label}</div>
-            <div class="metric-value {color_cls}">Rp {val:,.0f}</div>
+    # --- 1. HEADER INDAH ---
+    st.markdown("""
+        <div class="journal-title-card">
+            <h2>📝 Input Jurnal Transaksi</h2>
+            <p>Catat setiap pergerakan keuangan dengan presisi.</p>
         </div>
-        """
-    with c1: st.markdown(metric_html("Total Pendapatan", rev, "metric-pos"), unsafe_allow_html=True)
-    with c2: st.markdown(metric_html("Total Beban", exp, "metric-neg"), unsafe_allow_html=True)
-    with c3: st.markdown(metric_html("Laba Bersih", net_inc, "metric-pos" if net_inc>=0 else "metric-neg"), unsafe_allow_html=True)
-    with c4: st.markdown(metric_html("Modal Akhir", equity, "metric-neutral"), unsafe_allow_html=True)
+    """, unsafe_allow_html=True)
+
+    # --- 2. HEADER TRANSAKSI ---
+    with st.container(border=True):
+        c1, c2, c3 = st.columns([1, 1, 2])
+        with c1: entry_type = st.selectbox("Jenis Transaksi", ["REGULAR", "AJP"], help="AJP: Ayat Jurnal Penyesuaian")
+        with c2: jurnal_date = st.date_input("Tanggal Transaksi", value=date.today())
+        with c3: description = st.text_input("Keterangan", placeholder="Contoh: Pembayaran Gaji Karyawan Bulan Mei")
+
+    # --- 3. INPUT DINAMIS ---
+    st.write("")
+    st.markdown("##### ➕ Tambah Rincian Akun")
     
-    st.write("")
-    st.write("")
-
-    # --- B. TAB CONTENT ---
-    tab1, tab2, tab3, tab4 = st.tabs(["📑 Ikhtisar Laba Rugi", "📒 Jurnal Umum Detail", "⚙️ Worksheet (Neraca Lajur)", "📦 Kartu Stok"])
-
-    # TAB 1: INCOME STATEMENT
-    with tab1:
-        col_chart, col_table = st.columns([2, 1])
-        with col_chart:
-            st.subheader("Grafik Performa")
-            chart_df = pd.DataFrame({
-                "Kategori": ["Pendapatan", "Beban", "Laba Bersih"],
-                "Nilai": [rev, exp, net_inc]
-            })
-            st.bar_chart(chart_df, x="Kategori", y="Nilai", color="#FF6F61")
+    with st.form("input_form", clear_on_submit=True):
+        selected_account_str = st.selectbox("Pilih Akun Perkiraan", coa_options)
+        selected_code = coa_map.get(selected_account_str)
         
-        with col_table:
-            st.subheader("Rincian")
-            # Filter baris pendapatan dan beban
-            df_is = ws[ws['Tipe_Num'].isin([4,5,6,8,9])].copy()
-            df_is['Kategori'] = df_is['Tipe_Num'].map({4:'Pendapatan', 5:'HPP', 6:'Beban Ops', 8:'Pendapatan Lain', 9:'Beban Lain'})
-            
-            # Format Dataframe untuk Tampilan
-            st.dataframe(
-                df_is[['account_name', 'Adj_D', 'Adj_K']], 
-                use_container_width=True, hide_index=True,
-                column_config={
-                    "account_name": "Nama Akun",
-                    "Adj_D": st.column_config.NumberColumn("Debit", format="Rp %d"),
-                    "Adj_K": st.column_config.NumberColumn("Kredit", format="Rp %d")
-                }
-            )
+        # Logika Input
+        is_inv = selected_code in INVENTORY_ACCOUNTS
+        debit_val = 0.0; credit_val = 0.0
+        qty_input = 0; cost_input = 0.0
+        prod_id = None; inv_mode = None; note_stok = ""
 
-    # TAB 2: JURNAL UMUM (DIPERCANTIK)
-    with tab2:
-        st.subheader("Buku Jurnal Umum")
-        if not df_journal.empty:
-            df_display = df_journal.copy()
-            
-            # Tambahkan kolom visual untuk debit/kredit
-            df_display['Debit_View'] = df_display['debit_amount']
-            df_display['Credit_View'] = df_display['credit_amount']
-            
-            # Sorting
-            df_display = df_display.sort_values(['transaction_date', 'journal_id', 'debit_amount'], ascending=[False, False, False])
+        if selected_account_str != "--- Pilih Akun ---":
+            if is_inv:
+                st.info(f"📦 Mode Stok Aktif: {selected_account_str}")
+                col_act, col_prod = st.columns([1, 2])
+                with col_act: action_type = st.radio("Aksi:", ["Masuk (Debit)", "Keluar (Kredit)"])
+                with col_prod:
+                    prod_key = st.selectbox("Item Produk", list(prod_options.keys()))
+                    prod_data = prod_options[prod_key] if prod_key else {}
+                    prod_id = prod_data.get('id')
+                    sys_cost = prod_data.get('cost_price', 0) or 0
+                
+                c1, c2, c3 = st.columns(3)
+                with c1: qty_input = st.number_input("Qty", min_value=1, step=1)
+                with c2: 
+                    cost_input = st.number_input("Harga Satuan", min_value=0.0, value=float(sys_cost)) if "Masuk" in action_type else float(sys_cost)
+                    if "Keluar" in action_type: st.caption(f"HPP: Rp {sys_cost:,.0f}")
+                with c3: 
+                    total = qty_input * cost_input
+                    st.metric("Subtotal", f"Rp {total:,.0f}")
+                
+                if "Masuk" in action_type: debit_val = total; inv_mode = 'IN'
+                else: credit_val = total; inv_mode = 'OUT'
+                note_stok = f"[{inv_mode}] {qty_input}x @{cost_input:,.0f}"
+            else:
+                c1, c2 = st.columns(2)
+                with c1: debit_val = st.number_input("Debit (Rp)", min_value=0.0, step=1000.0)
+                with c2: credit_val = st.number_input("Kredit (Rp)", min_value=0.0, step=1000.0)
 
-            st.dataframe(
-                df_display[['transaction_date', 'entry_type', 'account_name', 'description_entry', 'Debit_View', 'Credit_View']],
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "transaction_date": st.column_config.DateColumn("Tanggal", format="DD/MM/YYYY"),
-                    "entry_type": st.column_config.TextColumn("Tipe", width="small"),
-                    "account_name": "Nama Akun",
-                    "description_entry": "Keterangan",
-                    "Debit_View": st.column_config.NumberColumn(
-                        "Debit", format="Rp %d", 
-                        help="Nominal Debit"
-                    ),
-                    "Credit_View": st.column_config.NumberColumn(
-                        "Kredit", format="Rp %d",
-                        help="Nominal Kredit"
-                    )
-                }
-            )
-        else:
-            st.info("Belum ada data jurnal pada periode ini.")
+        submitted = st.form_submit_button("Tambahkan Baris Akun", use_container_width=True)
+        if submitted:
+            if selected_account_str == "--- Pilih Akun ---": st.error("Pilih akun terlebih dahulu!")
+            elif debit_val == 0 and credit_val == 0: st.error("Nominal harus diisi!")
+            else:
+                st.session_state.journal_lines_manual.append({
+                    "Kode Akun": selected_code, "Akun": selected_account_str,
+                    "Debit": int(debit_val), "Kredit": int(credit_val),
+                    "Detail Stok": note_stok, "is_inventory": is_inv,
+                    "inv_mode": inv_mode, "product_id": prod_id,
+                    "qty": int(qty_input), "unit_cost": cost_input 
+                }); st.rerun()
 
-    # TAB 3: WORKSHEET
-    with tab3:
-        st.subheader("Kertas Kerja Akuntansi (Worksheet)")
+    # --- 4. PREVIEW & STATUS ---
+    if st.session_state.journal_lines_manual:
+        df_view = pd.DataFrame(st.session_state.journal_lines_manual)
+        
+        # Tampilan Tabel Rapi
+        st.write("###### Preview Jurnal")
         st.dataframe(
-            ws[['account_code', 'account_name', 'TB_D', 'TB_K', 'MJ_D', 'MJ_K', 'Adj_D', 'Adj_K']],
+            df_view[['Akun', 'Debit', 'Kredit', 'Detail Stok']], 
             use_container_width=True, hide_index=True,
             column_config={
-                "account_code": "Kode",
-                "account_name": "Nama Akun",
-                "TB_D": st.column_config.NumberColumn("NS Debit", format="Rp %d"),
-                "TB_K": st.column_config.NumberColumn("NS Kredit", format="Rp %d"),
-                "MJ_D": st.column_config.NumberColumn("AJP Debit", format="Rp %d"),
-                "MJ_K": st.column_config.NumberColumn("AJP Kredit", format="Rp %d"),
-                "Adj_D": st.column_config.NumberColumn("NS Disesuaikan (D)", format="Rp %d"),
-                "Adj_K": st.column_config.NumberColumn("NS Disesuaikan (K)", format="Rp %d"),
+                "Debit": st.column_config.NumberColumn(format="Rp %d"),
+                "Kredit": st.column_config.NumberColumn(format="Rp %d"),
+                "Detail Stok": st.column_config.TextColumn(help="Rincian pergerakan stok")
             }
         )
 
-    # TAB 4: KARTU STOK
-    with tab4:
-        st.subheader("Riwayat Pergerakan Stok")
-        if not mov.empty:
-            st.dataframe(
-                mov[['movement_date', 'product_id', 'movement_type', 'quantity_change', 'unit_cost', 'reference_id']],
-                use_container_width=True, hide_index=True,
-                column_config={
-                    "movement_date": st.column_config.DateColumn("Tanggal"),
-                    "movement_type": "Tipe",
-                    "quantity_change": st.column_config.NumberColumn("Qty", format="%d"),
-                    "unit_cost": st.column_config.NumberColumn("Cost/Unit", format="Rp %d"),
-                    "reference_id": "Ref"
-                }
-            )
-        else:
-            st.info("Data stok kosong.")
+        d_tot = df_view['Debit'].sum()
+        c_tot = df_view['Kredit'].sum()
+        balance = d_tot - c_tot
+        
+        # Status Balance Bar
+        css_class = "status-ok" if balance == 0 else "status-err"
+        msg = "✅ BALANCE / SEIMBANG" if balance == 0 else f"⚠️ TIDAK SEIMBANG (Selisih: Rp {abs(balance):,.0f})"
+        
+        st.markdown(f"""
+            <div class="balance-status {css_class}">
+                <div style="display:flex; justify-content:space-between; padding:0 20px;">
+                    <span>Total Debit: Rp {d_tot:,.0f}</span>
+                    <span>{msg}</span>
+                    <span>Total Kredit: Rp {c_tot:,.0f}</span>
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+
+        # Action Buttons
+        st.write("")
+        c_del, c_save = st.columns([1, 4])
+        if c_del.button("❌ Hapus Data"):
+            st.session_state.journal_lines_manual = []
+            st.rerun()
+        if c_save.button("💾 SIMPAN TRANSAKSI KE DATABASE", type="primary", use_container_width=True, disabled=(balance!=0)):
+            save_transaction(entry_type, jurnal_date, description)
+
+def save_transaction(entry_type, t_date, desc):
+    try:
+        # Header
+        h = supabase.table("journal_entries").insert({
+            "transaction_date": str(t_date), "description": desc, "entry_type": entry_type
+        }).execute().data[0]
+        
+        lines = st.session_state.journal_lines_manual
+        db_lines = []; db_moves = []
+        
+        for r in lines:
+            db_lines.append({
+                "journal_id": h['id'], "account_code": r['Kode Akun'], 
+                "debit_amount": r['Debit'], "credit_amount": r['Kredit']
+            })
+            # Logic Stok (Update Produk & Log Movement)
+            if r['is_inventory'] and r['product_id']:
+                pid = r['product_id']; qty = r['qty']; cost = r['unit_cost']; mode = r['inv_mode']
+                curr = supabase.table("products").select("stock, cost_price").eq("id", pid).execute().data[0]
+                
+                # Hitung Average Cost Baru jika Masuk
+                old_s = curr.get('stock', 0); old_c = curr.get('cost_price', 0)
+                new_s = old_s + qty if mode == 'IN' else old_s - qty
+                new_c = ((old_s * old_c) + (qty * cost)) / new_s if (mode == 'IN' and new_s > 0) else old_c
+                
+                supabase.table("products").update({"stock": int(new_s), "cost_price": int(new_c)}).eq("id", pid).execute()
+                db_moves.append({
+                    "product_id": pid, "movement_date": str(t_date), "movement_type": "RECEIPT" if mode=='IN' else "ISSUE",
+                    "quantity_change": qty if mode=='IN' else -qty, "unit_cost": int(cost if mode=='IN' else old_c),
+                    "reference_id": f"JURNAL-{h['id']}"
+                })
+        
+        supabase.table("journal_lines").insert(db_lines).execute()
+        if db_moves: supabase.table("inventory_movements").insert(db_moves).execute()
+        
+        st.toast("Transaksi Berhasil Disimpan!", icon="🎉")
+        st.session_state.journal_lines_manual = []
+        st.cache_data.clear()
+        st.rerun()
+    except Exception as e:
+        st.error(f"Gagal Menyimpan: {e}")
 
 if __name__ == "__main__":
-    show_reports_page()
+    jurnal_umum_form()
