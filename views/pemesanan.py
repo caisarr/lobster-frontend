@@ -18,63 +18,112 @@ def add_order_item(order_id, product_id, quantity, sub_total):
 
 def show_products():
     products = get_products()
-    st.title("Pemesanan Produk")
+    
+    st.title("🦞 Katalog Lobster")
+    st.markdown("Pilih lobster berkualitas premium langsung dari tambak kami.")
+    st.write("---")
 
     if "cart" not in st.session_state: st.session_state.cart = {}
 
-    for p in products:
-        with st.container(border=True):
-            c1, c2 = st.columns([1, 3])
-            with c1:
-                if p.get("image_url"): st.image(p["image_url"])
-            with c2:
-                st.subheader(p['name'])
-                st.write(p["description"])
-                st.write(f"**Rp {p['price']:,}** | Stok: {p.get('stock', 0)}")
+    # --- LAYOUT GRID (3 Kolom) ---
+    cols = st.columns(3)
+    
+    for index, p in enumerate(products):
+        # Memasukkan produk ke kolom secara bergantian
+        with cols[index % 3]:
+            with st.container(border=True):
+                # Tampilkan Gambar (Placeholder jika kosong)
+                if p.get("image_url"):
+                    st.image(p["image_url"], use_container_width=True)
+                else:
+                    st.image("https://via.placeholder.com/300x200?text=Lobster+Image", use_container_width=True)
                 
-                qty = st.number_input(f"Beli {p['name']}", 0, p.get('stock', 0), key=f"q_{p['id']}")
-                if st.button("Tambah", key=f"btn_{p['id']}") and qty > 0:
-                    st.session_state.cart[p["id"]] = {"product": p, "qty": qty}
-                    st.success("Masuk Keranjang")
+                # Info Produk
+                st.markdown(f"#### {p['name']}")
+                st.caption(p["description"] if p["description"] else "Deskripsi tidak tersedia.")
+                
+                # Harga & Stok
+                c1, c2 = st.columns([2, 1])
+                c1.markdown(f"**Rp {p['price']:,}**", unsafe_allow_html=True)
+                c2.caption(f"Stok: {p.get('stock', 0)}")
+                
+                # Input Quantity & Tombol Beli
+                qty = st.number_input("Jumlah", 0, p.get('stock', 0), key=f"q_{p['id']}", label_visibility="collapsed")
+                
+                if st.button("🛒 Masuk Keranjang", key=f"btn_{p['id']}", use_container_width=True):
+                    if qty > 0:
+                        st.session_state.cart[p["id"]] = {"product": p, "qty": qty}
+                        st.toast(f"{p['name']} berhasil ditambahkan!", icon="✅")
+                    else:
+                        st.warning("Minimal pembelian 1 ekor")
 
 def show_cart_and_payment():
     cart = st.session_state.get("cart", {})
+    
+    # Jangan tampilkan apa-apa jika keranjang kosong
     if not cart: return
 
-    st.divider()
-    st.subheader("Keranjang & Pembayaran")
-    total = sum(item["product"]["price"] * item["qty"] for item in cart.values())
+    st.write("")
+    st.write("---")
+    st.subheader("🛍️ Keranjang & Pembayaran")
     
-    for item in cart.values():
-        st.write(f"- {item['product']['name']} (x{item['qty']}) : Rp {item['product']['price'] * item['qty']:,}")
+    col_cart, col_pay = st.columns([1.5, 1])
     
-    st.markdown(f"### Total: Rp {total:,}")
-    address = st.text_area("Alamat Pengiriman")
+    # Kolom Kiri: Rincian Keranjang
+    with col_cart:
+        with st.container(border=True):
+            st.write("**Rincian Pesanan**")
+            total = 0
+            for item in cart.values():
+                subtotal = item["product"]["price"] * item["qty"]
+                total += subtotal
+                st.write(f"- **{item['product']['name']}** (x{item['qty']})")
+                st.caption(f"  Rp {item['product']['price']:,} x {item['qty']} = Rp {subtotal:,}")
+            
+            st.divider()
+            st.markdown(f"### Total: Rp {total:,}")
 
-    if st.button("Bayar Sekarang"):
-        if not address: st.error("Isi alamat!"); return
-        
-        # [UPDATE] Validasi Stok Terakhir
-        for pid, item in cart.items():
-            curr = supabase.table("products").select("stock").eq("id", pid).execute().data[0]
-            if curr['stock'] < item['qty']:
-                st.error(f"Stok {item['product']['name']} habis/kurang! Sisa: {curr['stock']}")
-                return
+    # Kolom Kanan: Form Alamat & Bayar
+    with col_pay:
+        with st.container(border=True):
+            st.write("**Informasi Pengiriman**")
+            address = st.text_area("Alamat Lengkap", height=100, placeholder="Jalan, Nomor Rumah, Kota...")
+            
+            if st.button("💳 Bayar Sekarang", use_container_width=True, type="primary"):
+                if not address: 
+                    st.error("Mohon isi alamat pengiriman!")
+                    return
+                
+                # Validasi Stok
+                for pid, item in cart.items():
+                    curr = supabase.table("products").select("stock").eq("id", pid).execute().data[0]
+                    if curr['stock'] < item['qty']:
+                        st.error(f"Stok {item['product']['name']} habis/kurang! Sisa: {curr['stock']}")
+                        return
 
-        # Proses Checkout
-        order = create_order(total, address)
-        for item in cart.values():
-            add_order_item(order["id"], item["product"]["id"], item["qty"], item["product"]["price"] * item["qty"])
+                # Proses Transaksi
+                try:
+                    order = create_order(total, address)
+                    for item in cart.values():
+                        add_order_item(order["id"], item["product"]["id"], item["qty"], item["product"]["price"] * item["qty"])
 
-        snap_token = create_transaction(order["id"], total)
-        
-        st.components.v1.html(f"""
-        <script src="https://app.sandbox.midtrans.com/snap/snap.js" data-client-key="{os.getenv('MIDTRANS_CLIENT_KEY')}"></script>
-        <button id="pay-button" style="background:#3b82f6;color:white;padding:10px;border:none;border-radius:5px;cursor:pointer;">LANJUT BAYAR</button>
-        <script>
-            document.getElementById('pay-button').onclick = function() {{ snap.pay('{snap_token}'); }};
-        </script>
-        """, height=750, scrolling=True)
+                    snap_token = create_transaction(order["id"], total)
+                    
+                    # Pop-up Midtrans
+                    st.components.v1.html(f"""
+                    <script src="https://app.sandbox.midtrans.com/snap/snap.js" data-client-key="{os.getenv('MIDTRANS_CLIENT_KEY')}"></script>
+                    <div style="text-align: center; margin-top: 20px;">
+                        <button id="pay-button" style="background:#FF6F61;color:white;padding:12px 24px;border:none;border-radius:8px;cursor:pointer;font-weight:bold;">
+                            LANJUTKAN PEMBAYARAN
+                        </button>
+                    </div>
+                    <script>
+                        document.getElementById('pay-button').onclick = function() {{ snap.pay('{snap_token}'); }};
+                    </script>
+                    """, height=600, scrolling=True)
+                    
+                except Exception as e:
+                    st.error(f"Terjadi kesalahan transaksi: {e}")
 
 def main():
     show_products()
