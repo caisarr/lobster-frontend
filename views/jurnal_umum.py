@@ -1,148 +1,247 @@
 import streamlit as st
 import pandas as pd
-from datetime import date
 from supabase_client import supabase
+from datetime import date
 
-# Konfigurasi Akun Persediaan sesuai database Anda
-INVENTORY_ACCOUNTS = ["1-1200", "1-1400", "1-1500"]
-
-def inject_journal_css():
-    st.markdown("""
-        <style>
-            .journal-title-card {
-                background: linear-gradient(120deg, #4facfe 0%, #00f2fe 100%);
-                padding: 25px; border-radius: 15px; color: white;
-                box-shadow: 0 4px 15px rgba(0, 242, 254, 0.3); margin-bottom: 25px;
-            }
-            .balance-status { padding: 15px; border-radius: 10px; font-weight: bold; text-align: center; margin-top: 10px; }
-            .status-ok { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
-            .status-err { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
-        </style>
-    """, unsafe_allow_html=True)
+# --- KONFIGURASI ---
+INVENTORY_ACCOUNTS = ['1-1200', '1-1400', '1-1500'] 
 
 @st.cache_data(ttl=60)
 def get_master_data():
+    """Mengambil data Akun (COA) dan Produk untuk dropdown."""
     try:
-        # Mengambil data dari tabel chart_of_accounts
+        # 1. Ambil COA
         coa_res = supabase.table("chart_of_accounts").select("account_code, account_name").order("account_code").execute()
         coa_options = ["--- Pilih Akun ---"] + [f"{a['account_code']} - {a['account_name']}" for a in coa_res.data]
         coa_map = {f"{a['account_code']} - {a['account_name']}": a['account_code'] for a in coa_res.data}
-        
-        # Mengambil data dari tabel products
-        prod_res = supabase.table("products").select("id, name, cost_price, stock").execute()
+
+        # 2. Ambil Produk
+        prod_res = supabase.table("products").select("id, name, inventory_account_code, cost_price, stock").execute()
         prod_options = {f"{p['name']} (Stok: {p.get('stock', 0)})": p for p in prod_res.data}
         
         return coa_options, coa_map, prod_options
     except Exception as e:
         st.error(f"Gagal memuat data master: {e}")
-        return ["--- Pilih Akun ---"], {}, {}
-
-def save_transaction(entry_type, t_date, desc):
-    try:
-        # Simpan Header Jurnal
-        h = supabase.table("journal_entries").insert({
-            "transaction_date": str(t_date), "description": desc, "entry_type": entry_type
-        }).execute().data[0]
-        
-        lines = st.session_state.journal_lines_manual
-        db_lines = []
-        
-        for r in lines:
-            db_lines.append({
-                "journal_id": h['id'], "account_code": r['Kode Akun'], 
-                "debit_amount": r['Debit'], "credit_amount": r['Kredit']
-            })
-            # Logika stok jika akun adalah persediaan
-            if r['is_inventory'] and r['product_id']:
-                mode = r['inv_mode']
-                qty = r['qty']
-                # Update stok di tabel products dan log di inventory_movements
-        
-        supabase.table("journal_lines").insert(db_lines).execute()
-        st.toast("Transaksi Berhasil Disimpan!", icon="🎉")
-        st.session_state.journal_lines_manual = []
-        st.rerun()
-    except Exception as e:
-        st.error(f"Gagal Menyimpan: {e}")
+        return [], {}, {}
 
 def jurnal_umum_form():
-    inject_journal_css()
+    # Load Data
     coa_options, coa_map, prod_options = get_master_data()
     
     if "journal_lines_manual" not in st.session_state:
         st.session_state.journal_lines_manual = []
 
-    st.markdown('<div class="journal-title-card"><h2>📝 Input Jurnal Transaksi</h2></div>', unsafe_allow_html=True)
-
-    # 1. Header Transaksi
+    st.title("📝 Input Jurnal Umum")
+    
+    # --- HEADER JURNAL ---
     with st.container(border=True):
-        c1, c2, c3 = st.columns([1, 1, 2])
-        with c1: entry_type = st.selectbox("Jenis Transaksi", ["REGULAR", "AJP"])
-        with c2: jurnal_date = st.date_input("Tanggal Transaksi", value=date.today())
-        with c3: description = st.text_input("Keterangan", placeholder="Contoh: Pembelian bibit lobster")
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            entry_type = st.selectbox("Tipe Transaksi", ["REGULAR", "AJP"], help="Pilih AJP untuk Penyesuaian.")
+        with c2:
+            jurnal_date = st.date_input("Tanggal Transaksi", value=date.today())
+        description = st.text_area("Keterangan", placeholder="Contoh: Pembelian Bibit / Penjualan Panen")
 
-    # 2. Form Input Akun
-    with st.form("input_form", clear_on_submit=True):
-        selected_account_str = st.selectbox("Pilih Akun Perkiraan", coa_options)
+    # --- TABEL PREVIEW ---
+    st.write("### Rincian Jurnal")
+    
+    # [PENTING] Tombol Reset untuk membersihkan data lama yang error
+    if st.button("🔄 Reset / Bersihkan Form"):
+        st.session_state.journal_lines_manual = []
+        st.rerun()
+
+    if st.session_state.journal_lines_manual:
+        df_view = pd.DataFrame(st.session_state.journal_lines_manual)
+        st.dataframe(df_view[['Akun', 'Debit', 'Kredit', 'Detail Stok']], use_container_width=True, hide_index=True)
+        
+        d_tot = df_view['Debit'].sum()
+        c_tot = df_view['Kredit'].sum()
+        color = "green" if d_tot == c_tot else "red"
+        st.markdown(f"<h4 style='text-align:right; color:{color}'>Total Debit: {d_tot:,.0f} | Total Kredit: {c_tot:,.0f}</h4>", unsafe_allow_html=True)
+    else:
+        st.info("Belum ada baris akun. Silakan tambah di bawah.")
+
+    # --- FORM INPUT SMART ---
+    st.divider()
+    st.subheader("➕ Tambah Baris Akun")
+    
+    with st.form("smart_input_form", clear_on_submit=True):
+        selected_account_str = st.selectbox("Pilih Akun", coa_options)
         selected_code = coa_map.get(selected_account_str)
         
+        # Logika Deteksi
+        is_placeholder = selected_account_str == "--- Pilih Akun ---"
         is_inv = selected_code in INVENTORY_ACCOUNTS
-        debit_val, credit_val, qty_input, cost_input = 0.0, 0.0, 0, 0.0
-        prod_id, inv_mode, note_stok = None, None, ""
-
-        if selected_account_str != "--- Pilih Akun ---":
-            if is_inv:
-                col_act, col_prod = st.columns([1, 2])
-                with col_act: action_type = st.radio("Aksi:", ["Masuk (Debit)", "Keluar (Kredit)"])
-                with col_prod:
-                    prod_key = st.selectbox("Item Produk", list(prod_options.keys()))
-                    p_data = prod_options.get(prod_key, {})
-                    prod_id = p_data.get('id')
-                    sys_cost = float(p_data.get('cost_price', 0) or 0)
-                
-                c1, c2, c3 = st.columns(3)
-                with c1: qty_input = st.number_input("Qty", min_value=1, key=f"q_{prod_id}")
-                with c2: 
-                    # FIX: Key unik agar harga reset saat produk diganti
-                    cost_input = st.number_input("Harga Satuan", value=sys_cost, key=f"c_{prod_id}_{action_type}")
-                with c3: st.metric("Subtotal", f"Rp {qty_input * cost_input:,.0f}")
-                
-                total = qty_input * cost_input
-                if "Masuk" in action_type: debit_val, inv_mode = total, 'IN'
-                else: credit_val, inv_mode = total, 'OUT'
-                note_stok = f"[{inv_mode}] {qty_input}x @{cost_input:,.0f}"
-            else:
-                c1, c2 = st.columns(2)
-                with c1: debit_val = st.number_input("Debit (Rp)", min_value=0.0, key=f"d_{selected_code}")
-                with c2: credit_val = st.number_input("Kredit (Rp)", min_value=0.0, key=f"cr_{selected_code}")
-
-        submitted = st.form_submit_button("Tambahkan Baris Akun", use_container_width=True)
-        # FIX: Data hanya masuk preview JIKA tombol diklik
-        if submitted and selected_account_str != "--- Pilih Akun ---":
-            st.session_state.journal_lines_manual.append({
-                "Kode Akun": selected_code, "Akun": selected_account_str,
-                "Debit": int(debit_val), "Kredit": int(credit_val),
-                "Detail Stok": note_stok, "is_inventory": is_inv,
-                "inv_mode": inv_mode, "product_id": prod_id,
-                "qty": int(qty_input), "unit_cost": cost_input 
-            })
-            st.rerun()
-
-    # 3. Preview & Simpan
-    if st.session_state.journal_lines_manual:
-        df = pd.DataFrame(st.session_state.journal_lines_manual)
-        st.dataframe(df[['Akun', 'Debit', 'Kredit', 'Detail Stok']], use_container_width=True, hide_index=True)
         
-        balance = df['Debit'].sum() - df['Kredit'].sum()
-        status_cls = "status-ok" if balance == 0 else "status-err"
-        st.markdown(f'<div class="balance-status {status_cls}">Selisih: Rp {abs(balance):,.0f}</div>', unsafe_allow_html=True)
+        # Default
+        debit_val = 0.0
+        credit_val = 0.0
+        qty_input = 0
+        cost_input = 0.0
+        prod_id = None
+        inv_mode = None
+        note_stok = ""
+        
+        if is_placeholder:
+            st.caption("Pilih akun untuk memulai.")
+            c1, c2 = st.columns(2)
+            c1.text_input("Debit", disabled=True, value="0")
+            c2.text_input("Kredit", disabled=True, value="0")
+            
+        elif is_inv:
+            st.info(f"📦 **Akun Persediaan Terdeteksi!**")
+            col_act, col_prod = st.columns([1, 2])
+            with col_act:
+                action_type = st.radio("Arah Stok:", ["Barang Masuk (Beli/Retur)", "Barang Keluar (Jual/Pakai)"])
+            with col_prod:
+                prod_key = st.selectbox("Pilih Produk/Bibit", list(prod_options.keys()))
+                prod_data = prod_options[prod_key] if prod_key else {}
+                prod_id = prod_data.get('id')
+                sys_cost = prod_data.get('cost_price', 0) or 0
 
-        c_del, c_save = st.columns([1, 4])
-        if c_del.button("❌ Reset"):
-            st.session_state.journal_lines_manual = []
-            st.rerun()
-        if c_save.button("💾 SIMPAN TRANSAKSI", type="primary", use_container_width=True, disabled=(balance != 0)):
-            save_transaction(entry_type, jurnal_date, description)
+            c_qty, c_price, c_total = st.columns(3)
+            with c_qty:
+                qty_input = st.number_input("Jumlah Unit (Qty)", min_value=1, step=1)
+            with c_price:
+                if "Masuk" in action_type:
+                    cost_input = st.number_input("Harga Beli Satuan (Rp)", min_value=0.0, step=100.0)
+                else:
+                    st.write(f"HPP Sistem: **Rp {sys_cost:,.0f}**")
+                    cost_input = sys_cost 
+            with c_total:
+                total_calc = qty_input * cost_input
+                st.metric("Total Nilai (Rp)", f"{total_calc:,.0f}")
+            
+            if "Masuk" in action_type:
+                debit_val = total_calc
+                inv_mode = 'IN'
+            else:
+                credit_val = total_calc
+                inv_mode = 'OUT'
+            
+            note_stok = f"{inv_mode}: {qty_input} x {cost_input:,.0f}"
+            
+        else:
+            # Manual Input
+            c1, c2 = st.columns(2)
+            with c1: debit_val = st.number_input("Debit (Rp)", min_value=0.0, step=1000.0)
+            with c2: credit_val = st.number_input("Kredit (Rp)", min_value=0.0, step=1000.0)
+
+        submitted = st.form_submit_button("Tambahkan ke Tabel")
+        
+        if submitted:
+            if is_placeholder:
+                st.error("Harap pilih akun terlebih dahulu.")
+            elif debit_val == 0 and credit_val == 0:
+                st.error("Nominal tidak boleh nol.")
+            elif debit_val > 0 and credit_val > 0:
+                st.error("Pilih salah satu: Debit atau Kredit.")
+            else:
+                # KONVERSI KE INT DI SINI AGAR TAMPILAN BERSIH
+                safe_debit = int(round(debit_val))
+                safe_credit = int(round(credit_val))
+                safe_qty = int(qty_input)
+                
+                new_line = {
+                    "Kode Akun": selected_code,
+                    "Akun": selected_account_str,
+                    "Debit": safe_debit,
+                    "Kredit": safe_credit,
+                    "Detail Stok": note_stok,
+                    "is_inventory": is_inv,
+                    "inv_mode": inv_mode,
+                    "product_id": prod_id,
+                    "qty": safe_qty,
+                    "unit_cost": cost_input 
+                }
+                st.session_state.journal_lines_manual.append(new_line)
+                st.rerun()
+
+    # --- TOMBOL FINAL SAVE ---
+    if st.button("💾 SIMPAN TRANSAKSI", type="primary", use_container_width=True):
+        save_transaction(entry_type, jurnal_date, description)
+
+def save_transaction(entry_type, t_date, desc):
+    lines = st.session_state.journal_lines_manual
+    if not lines: return st.error("Data kosong.")
+    
+    total_d = sum(x['Debit'] for x in lines)
+    total_c = sum(x['Kredit'] for x in lines)
+    
+    if abs(total_d - total_c) > 1: 
+        return st.error(f"Jurnal Tidak Seimbang! Selisih: {abs(total_d - total_c):,.0f}")
+
+    try:
+        # 1. Header
+        h = supabase.table("journal_entries").insert({
+            "transaction_date": str(t_date), "description": desc, "entry_type": entry_type
+        }).execute().data[0]
+        jid = h['id']
+
+        db_lines = []
+        db_moves = []
+
+        for row in lines:
+            # 2. Lines (Pastikan amount dikirim sebagai Integer)
+            db_lines.append({
+                "journal_id": jid, 
+                "account_code": row['Kode Akun'], 
+                "debit_amount": int(row['Debit']),   
+                "credit_amount": int(row['Kredit'])  
+            })
+            
+            # 3. Update Stok
+            if row['is_inventory'] and row['product_id']:
+                pid = row['product_id']
+                qty = int(row['qty']) 
+                cost = row['unit_cost']
+                mode = row['inv_mode']
+                
+                curr = supabase.table("products").select("stock, cost_price").eq("id", pid).execute().data[0]
+                old_s = curr.get('stock', 0) or 0
+                old_c = curr.get('cost_price', 0) or 0
+                
+                new_s, new_c = old_s, old_c
+                
+                if mode == 'IN':
+                    new_s = old_s + qty
+                    if new_s > 0: 
+                        new_c = ((old_s * old_c) + (qty * cost)) / new_s
+                elif mode == 'OUT':
+                    new_s = old_s - qty
+                
+                # [FIX DATABASE ERROR]
+                # Paksa 'stock' dan 'cost_price' jadi INT agar DB Integer tidak menolak
+                final_stock = int(new_s)
+                final_cost_price = int(round(new_c)) # <-- FIX UTAMA DI SINI
+                
+                supabase.table("products").update({
+                    "stock": final_stock,  
+                    "cost_price": final_cost_price 
+                }).eq("id", pid).execute()
+                
+                # Inventory Movement
+                final_cost = cost if mode == 'IN' else old_c
+                
+                db_moves.append({
+                    "product_id": pid, 
+                    "movement_date": str(t_date),
+                    "movement_type": "RECEIPT" if mode == 'IN' else "ISSUE",
+                    "quantity_change": qty if mode == 'IN' else -qty,
+                    "unit_cost": int(round(final_cost)), # <-- FIX: Paksa INT di sini juga
+                    "reference_id": f"JURNAL-{jid}"
+                })
+
+        supabase.table("journal_lines").insert(db_lines).execute()
+        if db_moves: supabase.table("inventory_movements").insert(db_moves).execute()
+        
+        st.success("✅ Berhasil Disimpan!")
+        st.session_state.journal_lines_manual = []
+        st.cache_data.clear()
+        st.rerun()
+
+    except Exception as e:
+        st.error(f"Error Database: {e}")
 
 if __name__ == "__main__":
     jurnal_umum_form()
